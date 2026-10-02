@@ -148,8 +148,14 @@ class UAVNavEnv(BaseRLAviary):
         a = action[0]                               # (3,) normalized
         u_f = k_ma * np.clip(a, -1.0, 1.0)         # reference acceleration
 
+        # Gravity compensation: zero action should produce hover (Eq. 8: u_f = k_ma·a + g·E)
+        # The PID handles attitude/thrust, so we add gravity offset to the look-ahead
+        g = self.cfg['g']
+        net_acc = u_f - np.array([0., 0., g])       # net acceleration after gravity
+
         # Kinematic look-ahead to compute PID waypoint
-        target_pos = cur_pos + cur_vel * dt + u_f * (dt ** 2)
+        target_pos = cur_pos + cur_vel * dt + net_acc * (dt ** 2)
+
         # Clip to flight bounds
         bound = self.cfg['flight_bounds']
         target_pos = np.clip(target_pos, -bound, bound)
