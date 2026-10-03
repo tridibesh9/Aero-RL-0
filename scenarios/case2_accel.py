@@ -13,7 +13,7 @@ OBS_INIT_VEL = np.array([0.0,  0.5,  0.0])
 OBS_ACCEL    = np.array([0.0,  0.4,  0.0])   # constant acceleration (m/s²)
 
 SCENARIO_CONFIG = {
-    "name":            "Case 2 — Accelerating Obstacle",
+    "name":            "Case 2 - Accelerating Obstacle",
     "start_pos":       START_POS,
     "goal_pos":        GOAL_POS,
     "obs_init_pos":    OBS_INIT,

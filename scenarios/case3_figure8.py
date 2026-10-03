@@ -26,7 +26,7 @@ _OMG = 0.6     # angular frequency (rad/s)  → period ≈ 10 s
 OBS_INIT = np.array([_CX, _CY, _CZ])
 
 SCENARIO_CONFIG = {
-    "name":            "Case 3 — Figure-8 Obstacle",
+    "name":            "Case 3 - Figure-8 Obstacle",
     "start_pos":       START_POS,
     "goal_pos":        GOAL_POS,
     "obs_init_pos":    OBS_INIT,

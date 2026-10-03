@@ -34,7 +34,7 @@ try:
     _CVXPY_AVAILABLE = True
 except ImportError:
     _CVXPY_AVAILABLE = False
-    print("[ACBF] WARNING: cvxpy not installed — ACBF will pass through u_ref unchanged.")
+    print("[ACBF] WARNING: cvxpy not installed -- ACBF will pass through u_ref unchanged.")
 
 from utils.math_utils import (
     predict_uav_position_i,
@@ -187,7 +187,7 @@ class ACBFFilter:
                 continue
 
         # Fallback: if numerical failure occurs, return reference
-        print("[ACBF] Solver exception — returning u_ref")
+        print("[ACBF] Solver exception -- returning u_ref")
         return u_ref.copy(), self._gamma_prev
 
     # ── Precompute helpers ────────────────────────────────────────────────────────

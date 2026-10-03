@@ -16,7 +16,7 @@ OBS_INIT  = np.array([2.5,  0.0,  1.5])   # obstacle start (on the direct path)
 OBS_VEL   = np.array([0.0,  0.8,  0.0])   # constant velocity (m/s)
 
 SCENARIO_CONFIG = {
-    "name":            "Case 1 — Linear Obstacle",
+    "name":            "Case 1 - Linear Obstacle",
     "start_pos":       START_POS,
     "goal_pos":        GOAL_POS,
     "obs_init_pos":    OBS_INIT,

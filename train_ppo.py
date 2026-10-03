@@ -189,8 +189,8 @@ def main():
     # ── Save ───────────────────────────────────────────────────────────────────
     model.save("results/ppo_final")
     print(f"\n[Train] Done in {elapsed:.1f}s ({elapsed/60:.1f} min)")
-    print("[Train] Model saved → results/ppo_final.zip")
-    print("[Train] Best model  → results/ppo_model/best/best_model.zip")
+    print("[Train] Model saved -> results/ppo_final.zip")
+    print("[Train] Best model  -> results/ppo_model/best/best_model.zip")
 
     train_env.close()
     eval_env.close()
