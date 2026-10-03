@@ -30,6 +30,8 @@ class EpisodeLogger:
         self.velocities.append(v_uav.copy())
         self.accels.append(u.copy())
         self.obs_positions.append(p_obs.copy())
+        dist = float(np.linalg.norm(p_uav - p_obs))
+        self.min_dists.append(dist)
         # Physical collision occurs when drone sphere (0.2m) touches obstacle sphere (0.2m)
         if dist < 0.40:
             self.collision = True
