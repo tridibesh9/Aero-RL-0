@@ -121,21 +121,15 @@ class ACBFFilter:
         # ── Precompute h values at reference input (u_ref) ─────────────────────
         h = self._compute_h_sequence(p_uav, v_uav, u_ref, obs_traj)
 
-        # ── ψ₁ evaluated at current state (independent of u) ─────────────────
-        # ψ₁(k) = h₁ - h₀ + γ₁·h₀ = h₁ - (1-γ₁)·h₀
-        # (h₀ and h₁ don't involve u — see Sec 3.3 discussion)
-        psi1 = h[1] - (1.0 - self.gamma1) * h[0]
-
         # ── Linearise CBF constraints for i = 2,...,N ─────────────────────────
-        A_cbf, b_cbf = self._linearise_cbf(p_uav, v_uav, u_ref, obs_traj,
-                                            h, psi1)
+        A_cbf, b_cbf = self._linearise_cbf(p_uav, v_uav, u_ref, obs_traj, h)
 
         # ── CLF V_prev ─────────────────────────────────────────────────────────
         V_prev = (self._gamma_prev - self._gamma_star_prev) ** 2
 
         # ── Solve QP ───────────────────────────────────────────────────────────
         u_safe, gamma_new = self._solve_qp(u_ref, gamma_star, V_prev,
-                                           A_cbf, b_cbf, psi1)
+                                           A_cbf, b_cbf)
 
         # Store for next step
         self._gamma_prev      = gamma_new
@@ -145,7 +139,7 @@ class ACBFFilter:
 
     # ── QP solver ────────────────────────────────────────────────────────────────
 
-    def _solve_qp(self, u_ref, gamma_star, V_prev, A_cbf, b_cbf, psi1):
+    def _solve_qp(self, u_ref, gamma_star, V_prev, A_cbf, b_cbf):
         """
         Solve Eq. (29) with CVXPY.
 
@@ -154,11 +148,15 @@ class ACBFFilter:
         u     = cp.Variable(3)
         gamma = cp.Variable()
         delta = cp.Variable()
+        n_cbf = len(A_cbf)
+        xi    = cp.Variable(n_cbf, nonneg=True)
 
-        # Objective
+        # Objective: minimize tracking deviation, adaptive gamma tracking,
+        # and constraint violation penalty (Table 1: lambda_delta = 1e4)
         obj = (self.lam_u * cp.sum_squares(u - u_ref)
                + self.lam_g * cp.square(gamma - gamma_star)
-               + self.lam_d * cp.square(delta))
+               + self.lam_d * cp.square(delta)
+               + self.lam_d * cp.sum_squares(xi))
 
         constraints = [
             u >= self.u_min,
@@ -170,10 +168,10 @@ class ACBFFilter:
             cp.square(gamma - gamma_star) <= delta + (1 - self.alpha) * V_prev,
         ]
 
-        # CBF constraints: A_cbf[i] @ [u; gamma] ≥ b_cbf[i]
+        # CBF constraints with slack: A_cbf[i] @ [u; gamma] + xi[i] ≥ b_cbf[i]
         xu = cp.hstack([u, gamma])  # shape (4,)
-        for row, rhs in zip(A_cbf, b_cbf):
-            constraints.append(row @ xu >= rhs)
+        for idx, (row, rhs) in enumerate(zip(A_cbf, b_cbf)):
+            constraints.append(row @ xu + xi[idx] >= rhs)
 
         prob = cp.Problem(cp.Minimize(obj), constraints)
 
@@ -188,8 +186,8 @@ class ACBFFilter:
             except Exception:
                 continue
 
-        # Fallback: return reference (QP infeasible)
-        print("[ACBF] QP infeasible — returning u_ref")
+        # Fallback: if numerical failure occurs, return reference
+        print("[ACBF] Solver exception — returning u_ref")
         return u_ref.copy(), self._gamma_prev
 
     # ── Precompute helpers ────────────────────────────────────────────────────────
@@ -206,7 +204,7 @@ class ACBFFilter:
             h[i] = safety_fn(p_i, obs_traj[i], self.ds)
         return h
 
-    def _linearise_cbf(self, p0, v0, u_ref, obs_traj, h, psi1) -> tuple:
+    def _linearise_cbf(self, p0, v0, u_ref, obs_traj, h) -> tuple:
         """
         Build linearised CBF constraint rows for i ∈ {2, ..., N}.
 
@@ -215,9 +213,11 @@ class ACBFFilter:
 
         where g_i = ∇_u h_i = c_i·dt²·(p̂_i - p̂_o_i)  with c_i = i(i-1)/2
 
-        Constraint (from Eq. 24, rearranged):
-            h_i(u) + γ₂·ψ₁·γ ≥ h_{i-1}·(1-γ₁) + ε_h
-            → g_iᵀu + γ₂·ψ₁·γ ≥ h_{i-1}·(1-γ₁) - h_i(u_ref) + g_iᵀu_ref
+        Constraint from Eq. (24):
+            Δψ₁_m ≥ -γ₂·γ·ψ₁_m  for m = i - 2
+            where ψ₁_m = h_{m+1} - (1-γ₁)·h_m
+            → h_i(u) ≥ (1-γ₁)·h_{i-1} + ψ₁_m - γ₂·γ·ψ₁_m
+            → g_iᵀu + γ₂·ψ₁_m·γ ≥ (1-γ₁)·h_{i-1} + ψ₁_m - h_i(u_ref) + g_iᵀu_ref
 
         Decision-variable vector: [u(3), γ(1)]  → each row has shape (4,)
         """
@@ -226,7 +226,16 @@ class ACBFFilter:
         rows = []
         rhs  = []
 
+        # Precompute psi1 sequence along prediction horizon:
+        # psi1[m] = h[m+1] - (1 - gamma1) * h[m]
+        psi1 = np.zeros(N)
+        for m in range(N):
+            psi1[m] = h[m + 1] - (1.0 - self.gamma1) * h[m]
+
         for i in range(2, N + 1):
+            m = i - 2                        # prediction step index corresponding to psi1
+            psi1_m = psi1[m]
+
             c_i  = i * (i - 1) / 2          # coefficient for acceleration term
             p_i  = predict_uav_position_i(p0, v0, u_ref, dt, i)
             diff = p_i - obs_traj[i]          # (3,) relative position vector
@@ -234,13 +243,14 @@ class ACBFFilter:
             # Gradient of h_i w.r.t. u
             g_i = c_i * (dt ** 2) * diff     # (3,)
 
-            # Build row [g_iᵀ, γ₂·ψ₁] for decision vector [u; γ]
+            # Build row [g_iᵀ, γ₂·ψ₁_m] for decision vector [u; γ]
             row = np.zeros(4)
             row[:3] = g_i
-            row[3]  = self.gamma2 * psi1
+            row[3]  = self.gamma2 * psi1_m
 
-            # RHS: h_{i-1}·(1-γ₁) - h_i(u_ref) + g_iᵀu_ref
-            rhs_i = (h[i - 1] * (1.0 - self.gamma1)
+            # RHS: (1 - γ₁)·h_{i-1} + ψ₁_m - h_i(u_ref) + g_iᵀu_ref
+            rhs_i = ((1.0 - self.gamma1) * h[i - 1]
+                     + psi1_m
                      - h[i]
                      + float(g_i @ u_ref))
 

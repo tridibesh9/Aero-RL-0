@@ -90,6 +90,7 @@ def run_episode(env: UAVNavEnv,
         if controller is None:
             # Pure RL: use PPO directly (no safety filter)
             action_norm, _ = env._pure_ppo.predict(obs, deterministic=True)
+            action_norm = np.array(action_norm).reshape(1, 3).astype(np.float32)
             u_logged = env.cfg['k_ma'] * action_norm.flatten()
             obs_traj_log = np.tile(z_obs, (env.cfg['N_pred']+1, 1))
         else:

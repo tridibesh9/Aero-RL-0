@@ -87,7 +87,7 @@ def plot_3d_trajectories(logs: list[EpisodeLogger],
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
-    print(f"[Logger] Saved 3D trajectory → {save_path}")
+    print(f"[Logger] Saved 3D trajectory -> {save_path}")
 
 
 def plot_min_distance(logs: list[EpisodeLogger], ds: float, save_path: str):
@@ -107,7 +107,7 @@ def plot_min_distance(logs: list[EpisodeLogger], ds: float, save_path: str):
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
-    print(f"[Logger] Saved distance plot → {save_path}")
+    print(f"[Logger] Saved distance plot -> {save_path}")
 
 
 def plot_states(log: EpisodeLogger, save_path: str):
@@ -132,7 +132,7 @@ def plot_states(log: EpisodeLogger, save_path: str):
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
-    print(f"[Logger] Saved state plot → {save_path}")
+    print(f"[Logger] Saved state plot -> {save_path}")
 
 
 def print_summary_table(results: dict):

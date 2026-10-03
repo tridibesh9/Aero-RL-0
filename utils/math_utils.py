@@ -14,17 +14,17 @@ G_VEC = np.array([0.0, 0.0, 9.8])   # [0,0,g]  (gravity in inertial frame)
 def predict_uav_trajectory(p0: np.ndarray, v0: np.ndarray,
                             u: np.ndarray, dt: float, N: int) -> np.ndarray:
     """
-    Predict UAV position over N steps assuming constant control input u.
+    Predict UAV position over N steps assuming constant maneuvering acceleration u.
 
-    Implements Eq. (21) from the paper:
-        v(k+1|k) = v(k) + (u(k) - g·E)·Δt
+    Implements Eq. (21) from the paper where u is maneuvering acceleration (hover at u=0):
+        v(k+1|k) = v(k) + u(k)·Δt
         p(k+1|k) = p(k) + v(k)·Δt
 
     Parameters
     ----------
     p0 : (3,)  current position
     v0 : (3,)  current velocity
-    u  : (3,)  control acceleration (inertial frame)
+    u  : (3,)  maneuvering acceleration (inertial frame, hover=0)
     dt : float  timestep
     N  : int    horizon length
 
@@ -32,7 +32,7 @@ def predict_uav_trajectory(p0: np.ndarray, v0: np.ndarray,
     -------
     pos_seq : (N+1, 3) positions  [p(k|k), p(k+1|k), ..., p(k+N|k)]
     """
-    net_acc = u - G_VEC          # net acceleration (control minus gravity)
+    net_acc = u                  # maneuvering acceleration (u=0 is hover)
     pos_seq = np.zeros((N + 1, 3))
     vel_seq = np.zeros((N + 1, 3))
     pos_seq[0] = p0
@@ -48,11 +48,11 @@ def predict_uav_position_i(p0: np.ndarray, v0: np.ndarray,
     """
     Analytical i-step position prediction (closed form of Eq. 21).
 
-        p(k+i|k) = p0 + i·v0·dt + i·(i-1)/2·(u - g·E)·dt²
+        p(k+i|k) = p0 + i·v0·dt + i·(i-1)/2·u·dt²
 
     Parameters
     ----------
-    p0, v0, u : (3,) arrays
+    p0, v0, u : (3,) arrays (u is maneuvering acceleration, hover=0)
     dt : float
     i  : int   prediction step index
 
@@ -60,7 +60,7 @@ def predict_uav_position_i(p0: np.ndarray, v0: np.ndarray,
     -------
     (3,) position at step i
     """
-    net_acc = u - G_VEC
+    net_acc = u
     return p0 + i * v0 * dt + (i * (i - 1) / 2) * net_acc * (dt ** 2)
 
 

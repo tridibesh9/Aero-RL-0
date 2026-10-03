@@ -11,7 +11,7 @@ flight_bounds: 10.0
 max_episode_steps: 500
 
 # -- PPO / Reward (Table 1) ------------------------------------------------------
-k_ma: 12.0        # max acceleration limit per axis (m/s^2)  [Table 2 value]
+k_ma: 1.0         # max acceleration limit per axis (m/s^2)  [Table 1 value]
 M_tr: 100.0       # terminal reward coefficient
 M_ds: 1.0         # distance-shaping weight
 M_bp: 10.0        # boundary penalty
