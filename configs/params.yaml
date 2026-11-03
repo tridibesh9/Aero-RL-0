@@ -2,8 +2,7 @@
 dt: 0.05          # control timestep (s)  -> ctrl_freq = 20 Hz
 ctrl_freq: 20
 pyb_freq: 240     # PyBullet internal physics freq (must be multiple of ctrl_freq)
-g: 9.8
-mass: 0.027       # kg
+# Crazyflie mass and gravity come from the simulator.
 drone_radius: 0.2 # collision radius (m)
 obs_radius:   0.2 # obstacle sphere radius (m)
 safety_cushion: 0.1
@@ -11,7 +10,7 @@ flight_bounds: 10.0
 max_episode_steps: 500
 
 # -- PPO / Reward (Table 1) ------------------------------------------------------
-k_ma: 1.0         # max acceleration limit per axis (m/s^2)  [Table 1 value]
+k_ma: 1.0         # scale mapping a normalized action to a waypoint command
 M_tr: 100.0       # terminal reward coefficient
 M_ds: 1.0         # distance-shaping weight
 M_bp: 10.0        # boundary penalty
@@ -27,15 +26,20 @@ ppo_gamma: 0.99
 ppo_clip_range: 0.2
 ppo_ent_coef: 0.01
 ppo_total_timesteps: 1_000_000
+validation_goals: [[-3.0, 2.0, 1.8], [1.0, -4.0, 1.2], [2.0, 2.0, 2.5], [-2.0, -2.0, 0.7]]
+validation_interval: 20000  # environment transitions
+training_goal_radii: [1.0, 2.5, null]  # null uses the full static-obstacle task
+curriculum_window: 20
+curriculum_success_fraction: 0.8
 
 # -- ACBF (Table 1) -------------------------------------------------------------
 gamma1: 0.8       # gamma1  convergence rate for safe set (first-order)
 gamma2: 0.5       # gamma2  convergence rate for safe set (second-order)
-gamma_max: 2.0    # alpha_max: upper bound for adaptive penalty reference
+closing_time_scale: 2.0  # seconds, gain on fractional closing speed
 alpha_clf: 0.9    # alpha in CLF decay constraint  (0 < alpha < 1)
 lambda_u: 1.0     # weight on tracking error   (lambda_u)
 lambda_gamma: 10.0 # weight on adaptive safety weight (lambda_gamma)
-lambda_delta: 1.0e4  # weight on slack variable  (lambda_delta)
+lambda_delta: 10000.0
 u_max: 3.0        # physical acceleration limit  (m/s^2)
 u_min: -3.0
 

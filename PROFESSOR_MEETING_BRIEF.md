@@ -1,6 +1,6 @@
 # BTP professor meeting brief
 
-Prepared: 31 October 2026
+Updated 3 November 2026 after the corrected benchmark replay.
 
 **Deadline: 6 November 2026. Submission format: LaTeX. First meeting: 2 or 3 November. Proposed second review: 4 or 5 November, subject to the professor's availability.**
 
@@ -10,7 +10,7 @@ Prepared: 31 October 2026
 
 ## Opening statement
 
-> My project studies how a drone can reach a target while avoiding moving obstacles. The current repository combines a PPO navigation policy, an IMM obstacle-motion predictor, and an adaptive control barrier function filter, following Gao and Sun's architecture. A trained model and preliminary outputs are available. With submission due on 6 November, I propose focusing the thesis on validating the implementation and comparing the three controllers across the three existing obstacle scenarios, with clear discussion of limitations. I am preparing the thesis in LaTeX and would like to confirm whether this scope meets the required contribution.
+> My project studies how a drone can reach a target while avoiding moving obstacles. I am evaluating Gao and Sun's architecture in simulation. With the existing PPO checkpoint, adding the filter increased minimum separation in the linear case from 0.353 m to 0.620 m. Both PPO flights timed out. PID with the same filter reached the goal in all three cases. I would like to discuss how to present the implementation corrections, these results and their limitations in the thesis.
 
 This statement describes the current repository and the proposed work. Adapt any statement about personal implementation or completed work to what you actually did.
 
@@ -57,11 +57,11 @@ Obstacle positions -> IMM -> predicted obstacle positions --+-> ACBF
 - Evaluation adds IMM and ACBF without retraining the policy.
 - The configured controller period is 0.05 seconds; prediction covers five steps, or 0.25 seconds.
 - The saved final PPO model records 2,015,232 timesteps.
-- A repository-review check loaded the model and ran the combined controller for ten simulation steps successfully.
+- The corrected evaluator replayed nine flights and recorded start and terminal state, commands, obstacle distances, solver diagnostics and stop reasons.
 
-**Limit:** A ten-step check establishes basic execution, not successful navigation, full reproduction, or a safety guarantee.
+The existing checkpoint also timed out on all four fixed validation goals with a distant obstacle. No new PPO training was performed during these corrections.
 
-### Slide 4: Planned comparisons and preliminary evidence
+### Slide 4 · Measured comparisons
 
 Controllers:
 
@@ -71,28 +71,26 @@ Controllers:
 
 Obstacle cases: constant velocity, constant acceleration, and figure-eight motion.
 
-The existing saved summary contains the following **Case 1 preliminary results**:
+Each cell gives the stop reason and the minimum sampled centre distance in metres. Each case is one deterministic flight per controller.
 
-| Controller | Minimum logged centre-to-centre distance | Logged collision |
-|---|---:|---|
-| PPO + IMM + ACBF | 0.952 m | No |
-| PID + IMM + ACBF | 1.727 m | No |
-| PPO alone | 0.353 m | Yes |
+| Controller | Linear | Accelerating | Figure-eight |
+|---|---|---|---|
+| PPO + IMM + ACBF | Timeout, 0.620 | Timeout, 0.960 | Timeout, 2.361 |
+| PID + IMM + ACBF | Goal, 1.561 | Goal, 0.842 | Goal, 0.722 |
+| PPO alone | Timeout, 0.353 | Timeout, 0.909 | Timeout, 2.361 |
 
-Source: `results/eval/summary_table.txt`.
+The collision threshold is 0.40 m and the safety-buffer boundary is 0.50 m. [Checked summary](results/evaluations/btp_review_20261103/summary_table.txt)
 
-These are existing saved outputs. They have not been reproduced in the current review, are not repeated-trial statistics, and do not establish goal-reaching success. The logger uses a 0.4 m distance threshold for its collision flag. Do not combine these numbers with paper results as if they were one local experiment.
-
-**What to say:** "These outputs motivate further evaluation, but I will regenerate them with recorded settings and repeated trials before treating them as thesis results."
+Use the raw CSVs to distinguish ground-truth measurements from predicted separation. The paper's separately trained Pure RL baselines answer a different experimental question.
 
 ### Slide 5: Validation work and proposed contribution
 
-Validation work:
+Completed implementation checks
 
-- Assess and address the mismatch between the safety filter's assumed motion and limits and the command actually executed by the environment. Document unresolved limitations and avoid unsupported guarantees.
-- Reconcile collision, clearance, and barrier-function thresholds.
-- Record goal success, timeout, collisions, constraint violations, and solver failures explicitly.
-- Regenerate all three cases using a reproducible experiment procedure.
+- The filter forecasts the waypoint command using a copy of the simulated drone and its motor controller. It solves within the same bounds as the environment.
+- Collision geometry, safety margin and the barrier zero level now agree with their respective configured radii.
+- Every issued filtered command is checked against its predicted trajectory. The logs report relaxations, solver status, and time spent computing each command.
+- The corrected run used one saved model and the same initial conditions for each comparison.
 
 Proposed research question:
 
@@ -104,9 +102,9 @@ Proposed contribution: a documented implementation assessment and reproducible c
 
 Next milestone:
 
-- Reproducible baseline results for all three controllers and all three scenarios.
-- One trajectory plot, one separation-over-time plot, and a table including goal-reaching success and collisions.
-- A short list of implementation corrections and their effects.
+- Incorporate the verified comparison, plots and limitations in the LaTeX thesis.
+- Discuss the old policy's goal-tracking failure and the revised checkpoint acceptance procedure.
+- Agree with the supervisor on any further trials needed for submission.
 
 Ask the professor:
 
@@ -121,7 +119,7 @@ Ask the professor:
 - This brief or six slides based on it.
 - A compiling LaTeX draft containing the problem, objectives, architecture, and methodology; include results only where supported by actual recorded runs.
 - The base paper.
-- The preliminary Case 1 table, clearly labelled.
+- The checked nine-flight table and Case 3 trajectory and distance plots from the same run.
 - A list of questions above and a place to record the decisions.
 
 Use a simulation demonstration only after checking it in advance. Existing plots can be shown as preliminary artifacts; they are not a substitute for a documented experimental run.

@@ -21,7 +21,6 @@ Model native spaces:
 from __future__ import annotations
 import numpy as np
 from collections import deque
-from typing import List
 
 
 # ── Model indices ───────────────────────────────────────────────────────────────
@@ -146,8 +145,8 @@ class IMMPredictor:
 
         # IMM cycle
         x_mix, P_mix = self._interact()
-        likelihoods   = self._filter(z, x_mix, P_mix)
-        self._update_probs(likelihoods)
+        log_likelihoods = self._filter(z, x_mix, P_mix)
+        self._update_probs(log_likelihoods)
         self.fused_pos, self.fused_vel = self._fuse()
 
         return self.fused_pos.copy()
@@ -194,7 +193,8 @@ class IMMPredictor:
         mu_mix = np.zeros((N_MODELS, N_MODELS))
         for i in range(N_MODELS):
             for j in range(N_MODELS):
-                mu_mix[i, j] = self.Pi[i, j] * self.mu[i] / (c_bar[j] + 1e-12)
+                if c_bar[j] > 0:
+                    mu_mix[i, j] = self.Pi[i, j] * self.mu[i] / c_bar[j]
 
         x_common = [self._to_common(j, self.x_hat[j]) for j in range(N_MODELS)]
         P_common = [self._cov_to_common(j, self.P_hat[j]) for j in range(N_MODELS)]
@@ -226,9 +226,9 @@ class IMMPredictor:
 
         Returns
         -------
-        likelihoods : (N_MODELS,)  Gaussian likelihood Λ_j(k)
+        log_likelihoods : (N_MODELS,) Gaussian log likelihoods
         """
-        likelihoods = np.zeros(N_MODELS)
+        log_likelihoods = np.zeros(N_MODELS)
 
         for j in range(N_MODELS):
             # Project mixed state back to model's native space
@@ -244,37 +244,34 @@ class IMMPredictor:
             # Innovation
             y      = z - C_j @ x_pred
             S      = C_j @ P_pred @ C_j.T + self.R
-            S_inv  = np.linalg.inv(S)
-
             # Kalman gain
-            K = P_pred @ C_j.T @ S_inv
+            K = np.linalg.solve(S, C_j @ P_pred).T
 
             # Update
             self.x_hat[j] = x_pred + K @ y
-            self.P_hat[j] = (np.eye(len(x0)) - K @ C_j) @ P_pred
+            residual_map = np.eye(len(x0)) - K @ C_j
+            self.P_hat[j] = residual_map @ P_pred @ residual_map.T + K @ self.R @ K.T
 
             # Likelihood (multivariate Gaussian)
-            sign, log_det = np.linalg.slogdet(2 * np.pi * S)
-            exponent = -0.5 * y @ S_inv @ y
-            likelihoods[j] = np.exp(exponent - 0.5 * log_det)
+            _, log_det = np.linalg.slogdet(2 * np.pi * S)
+            log_likelihoods[j] = -0.5 * (y @ np.linalg.solve(S, y) + log_det)
 
-        return likelihoods
+        return log_likelihoods
 
-    def _update_probs(self, likelihoods: np.ndarray):
+    def _update_probs(self, log_likelihoods: np.ndarray):
         """
         Step 3 — Probability update via Bayes' rule + likelihood smoothing.
         """
         # Apply moving-average smoothing to likelihoods
         for j in range(N_MODELS):
-            self.like_history[j].append(likelihoods[j])
-        smooth_likes = np.array([
-            np.mean(self.like_history[j]) for j in range(N_MODELS)
-        ])
-
-        c_bar = self.Pi.T @ self.mu
-        new_mu = c_bar * smooth_likes
-        total  = new_mu.sum()
-        self.mu = new_mu / (total + 1e-12)
+            self.like_history[j].append(log_likelihoods[j])
+        # Log of the arithmetic moving average. Large innovations can otherwise
+        # underflow all three likelihoods and permanently zero the mode weights.
+        smoothed = np.array([np.logaddexp.reduce(h) - np.log(len(h)) for h in self.like_history])
+        with np.errstate(divide="ignore"):
+            log_weights = np.log(self.Pi.T @ self.mu) + smoothed
+        weights = np.exp(log_weights - np.max(log_weights))
+        self.mu = weights / weights.sum()
 
     def _fuse(self):
         """Fused position and velocity estimates  (Eq. 19)."""
@@ -388,18 +385,24 @@ class IMMPredictor:
 
     def _cov_to_common(self, j: int, P: np.ndarray) -> np.ndarray:
         """Embed model j covariance into 9×9 common covariance."""
-        Pc = np.zeros((DIM_COMMON, DIM_COMMON))
         T  = self._projection_matrix(j)
-        Pc = T @ P @ T.T
-        return Pc
+        return T @ P @ T.T
 
     def _cov_from_common(self, j: int, Pc: np.ndarray) -> np.ndarray:
         """Project 9×9 common covariance to model j native space."""
-        T = self._projection_matrix(j)
-        return T.T @ Pc @ T + 1e-6 * np.eye(self._dim(j))
+        if j == CA:
+            return Pc.copy()
+        if j == CV:
+            return Pc[:6, :6].copy()
+        # The reverse state map selects p,v. Its externally estimated turn
+        # rate has no derivative wrt the common state; Q_ct supplies rate noise.
+        native_order = [0, 3, 1, 4, 2, 5]
+        P = np.zeros((DIM_CT, DIM_CT))
+        P[:6, :6] = Pc[np.ix_(native_order, native_order)]
+        return P
 
     def _projection_matrix(self, j: int) -> np.ndarray:
-        """Linear projection T_j: native_dim → 9."""
+        """Jacobian of the native-to-common state map at the model estimate."""
         d = self._dim(j)
         T = np.zeros((DIM_COMMON, d))
         if j == CV:
@@ -410,8 +413,9 @@ class IMMPredictor:
         else:  # CT
             T[0, 0] = 1; T[1, 2] = 1; T[2, 4] = 1   # pos (px,py,pz)
             T[3, 1] = 1; T[4, 3] = 1; T[5, 5] = 1   # vel (vx,vy,vz)
-            T[6, 1] = -1  # crude acceleration from vx column (sign of centripetal)
-            T[7, 3] =  1
+            _, vx, _, vy, _, _, omega = self.x_hat[CT]
+            T[6, 3], T[6, 6] = -omega, -vy
+            T[7, 1], T[7, 6] = omega, vx
         return T
 
     def _dim(self, j: int) -> int:

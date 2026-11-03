@@ -1,6 +1,6 @@
 # BTP thesis roadmap
 
-Prepared: 31 October 2026
+Updated 3 November 2026 with the verified simulation baseline.
 
 **Submission deadline: 6 November 2026. Format: LaTeX. First professor meeting: 2 or 3 November. Second meeting: before submission; target 4 or 5 November, subject to availability.**
 
@@ -49,21 +49,15 @@ Base paper: https://www.sciltp.com/journals/am/articles/2607004775
 
 ## 3. Establish a trustworthy baseline
 
-Preserve the current model and saved outputs before running experiments. The existing evaluation script writes into `results/eval/` and can replace files there. The training script also uses fixed output locations.
+The corrected nine-flight comparison is available for the thesis. The original model and historical evaluation remain available separately. [Verified summary](results/evaluations/btp_review_20261103/summary_table.txt) · [Run manifest](results/evaluations/btp_review_20261103/manifest.json)
 
-Before interpreting a full benchmark:
+1. Report goal completion and the reason each episode ended. With the original checkpoint, both PPO methods timed out in every case. PID with ACBF reached all three goals.
+2. Use centre distance consistently. The geometric collision threshold is 0.40 m. The safety buffer and the barrier's zero level are both at 0.50 m. The unfiltered PPO flight entered the collision radius in Case 1.
+3. Describe the waypoint/PID forward simulation, common command bounds, full barrier derivatives, nonlinear verification, and the shorter decay allowance during approach. The source-method comparison should identify these local design choices.
+4. Report the per-step raw data, solver diagnostics, and timing. Predicted clearance is hard over the finite horizon. The higher-order and Lyapunov conditions can use logged relaxation. A filter failure ends the episode before the command is applied.
+5. State the remaining evidence gap. The original checkpoint also timed out on all four fixed navigation goals. The revised training and selection procedure requires a future training experiment to assess improvement. [Validation record](results/validation/btp_review_20261103/validation.jsonl)
 
-1. Record the code revision, package versions, model file, configuration, random seed, and scenario definition for each experiment.
-2. Assess the acceleration-versus-PID-waypoint mismatch and the optimizer-versus-execution limit mismatch. Prioritize bounded corrections that can be checked within the deadline. A change in action meaning may require retraining; it should not be silently applied to an existing trained policy. Record any unresolved mismatch as a limitation and restrict claims to the evaluated implementation.
-3. Define collision, desired clearance, barrier satisfaction, goal success, and timeout separately. The current barrier zero occurs at about 0.707 m for `ds=0.5`, while the plotted threshold is 0.5 m and the logger collision threshold is 0.4 m.
-4. Review relative-motion sign conventions in the adaptive coefficient and document the chosen interpretation.
-5. Improve logging to include the terminal state, termination reason, actual executed command, solver status, and any constraint relaxation.
-6. Make random resets reproducible across episodes. The current reset implementation creates a fresh generator from `seed`, including when no seed is supplied.
-7. Execute all three controllers on all three cases and record the outputs in separate run directories.
-
-The current ACBF implementation permits constraint slack and can return the original command on solver failure. Describe measured safety performance and failure conditions; do not transfer the paper's formal guarantee to this implementation without establishing its assumptions.
-
-**Deliverable:** A reproducible baseline report with nine controller-scenario combinations, clear definitions, and traceable artifacts.
+Both evaluation and training allocate new run directories. The fixed case starts, seeded episode generation, archived settings, checkpoint hash and source fingerprint identify each comparison.
 
 ## 4. Design the experiments before collecting the final results
 
@@ -83,7 +77,7 @@ Suggested measurements:
 
 Use identical scenario definitions and paired random seeds when comparing controllers. Repeating an entirely deterministic episode with the same initial conditions produces the same trajectory, not evidence of robustness. Introduce documented variation, such as initial positions, obstacle speed, or measurement-noise realizations.
 
-Under the 6 November deadline, first complete and inspect the nine controller-scenario combinations. Then run a small, explicitly defined set of varied trials if time permits; record the sample count and do not imply that a small sample establishes robust safety. Single deterministic runs should be reported as individual case studies, not population success-rate estimates. When comparing learned policies, evaluation seeds measure environment variation; multiple independent training seeds are needed to assess training variability. A one-model evaluation must state that limitation.
+The nine default controller-scenario combinations have been checked. Report them as individual case studies. If the professor requests varied trials, specify which positions, motions, or measurements change and use matched seeds across controllers. Assessing variability between learned policies requires independent training runs.
 
 Report counts as well as percentages. Zero collisions in a finite experiment is an observed result, not a proof of zero collision probability.
 
@@ -151,4 +145,4 @@ This is a proposed submission scope for the professor to assess, not a guarantee
 1. Read `PROFESSOR_MEETING_BRIEF.md` and practise its opening explanation aloud.
 2. Turn its outline into six simple slides if a presentation is expected.
 3. Obtain the LaTeX template and confirm the exact submission cutoff, simulation-only scope, and contribution expected by the professor.
-4. Start writing and baseline validation immediately. Launch a new long training run only if a necessary correction requires it and there is enough time to evaluate and document the new model.
+4. Use the verified outputs to write the results and limitations. Any future training needs a separately identified model, its own goal-validation record, and a fresh benchmark.

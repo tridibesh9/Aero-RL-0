@@ -74,12 +74,12 @@ def safety_fn(p_uav: np.ndarray, p_obs: np.ndarray, ds: float) -> float:
     """
     Scalar CBF safety function h(p_uav, p_obs).
 
-    h = ½‖p_uav - p_obs‖² - d_s²   (Eq. 22)
+    h = ½(‖p_uav - p_obs‖² - d_s²), zero on the plotted safety sphere.
 
     Safe iff h ≥ 0.
     """
     diff = np.array(p_uav).flatten() - np.array(p_obs).flatten()
-    return 0.5 * float(np.dot(diff, diff)) - ds ** 2
+    return 0.5 * (float(np.dot(diff, diff)) - ds ** 2)
 
 
 # ── Rotation helpers ───────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ def rpy_to_rotation_matrix(rpy: np.ndarray) -> np.ndarray:
 def relative_collision_angle(p_uav: np.ndarray, v_uav: np.ndarray,
                               p_obs: np.ndarray, v_obs: np.ndarray):
     """
-    Compute cos(θ_r) = (p_r · v_r) / (‖p_r‖ · ‖v_r‖)   (Eq. 27)
+    Approach cosine is positive when range is decreasing.
 
     p_r = p_obs - p_uav,   v_r = v_obs - v_uav
 
@@ -117,22 +117,21 @@ def relative_collision_angle(p_uav: np.ndarray, v_uav: np.ndarray,
     norm_v = np.linalg.norm(v_rel)
     if norm_p < 1e-6 or norm_v < 1e-6:
         return 0.0, v_rel, p_rel
-    cos_theta_r = np.dot(p_rel, v_rel) / (norm_p * norm_v)
+    cos_theta_r = -np.dot(p_rel, v_rel) / (norm_p * norm_v)
     return float(cos_theta_r), v_rel, p_rel
 
 
-def adaptive_gamma_star(p_uav, v_uav, p_obs, v_obs, gamma_max: float) -> float:
+def adaptive_gamma_star(p_uav, v_uav, p_obs, v_obs, closing_time_scale: float) -> float:
     """
-    Compute γ*(k) from Eq. (28):
-
-        γ*(k) = γ_max · ‖v_r‖ · max(0, cos θ_r) / ‖p_r‖
-
-    Tightens safety margins as relative speed increases or distance decreases.
+    Use a smaller decay coefficient at a shorter time to encounter.
+    For positive psi, this raises the required next psi in the barrier.
     """
     cos_theta_r, v_rel, p_rel = relative_collision_angle(p_uav, v_uav, p_obs, v_obs)
     norm_v = np.linalg.norm(v_rel)
     norm_p = np.linalg.norm(p_rel)
     if norm_p < 1e-6:
-        return gamma_max
-    gamma_star = gamma_max * norm_v * max(0.0, cos_theta_r) / norm_p
-    return float(np.clip(gamma_star, 0.0, gamma_max))
+        return 0.0
+    closing_rate = norm_v * max(0.0, cos_theta_r) / norm_p
+    # Reserve the configured approach time. At time-to-encounter <= this
+    # reserve, the target decay is zero and positive psi should not decrease.
+    return float(np.clip(1.0 - closing_time_scale * closing_rate, 0.0, 1.0))

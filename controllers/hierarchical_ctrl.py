@@ -10,8 +10,8 @@ Control loop (one step):
     2. Observe raw obstacle position z_obs(k)
     3. IMM.update(z_obs)         → p̂_o(k)  [fused estimate]
     4. IMM.predict(N)            → {p̂_o(k+i|k)}  [trajectory]
-    5. PPO.predict(obs)          → u_f(k)   [reference acceleration]
-    6. ACBF.filter(u_f, state, traj) → u(k)  [safe acceleration]
+    5. PPO.predict(obs)          → u_f(k)   [reference waypoint command]
+    6. ACBF.filter(u_f, state, traj) → u(k)  [bounded waypoint command]
     7. Env receives u(k) as the action
 """
 
@@ -21,6 +21,13 @@ from stable_baselines3 import PPO
 
 from controllers.imm_predictor import IMMPredictor
 from controllers.acbf_filter   import ACBFFilter
+
+
+def _waypoint_rollout(override, configured):
+    rollout = configured if override is None else override
+    if rollout is None:
+        raise ValueError("Supply predict_positions=env.predict_positions for waypoint-controlled flight")
+    return rollout
 
 
 class HierarchicalController:
@@ -33,13 +40,14 @@ class HierarchicalController:
     config         : dict  loaded from configs/params.yaml
     """
 
-    def __init__(self, ppo_model_path: str, config: dict):
+    def __init__(self, ppo_model_path: str | PPO, config: dict, *, predict_positions=None):
         self.cfg  = config
         self.k_ma = config['k_ma']
         self.dt   = config['dt']
+        self.predict_positions = predict_positions
 
-        print(f"[HierCtrl] Loading PPO from {ppo_model_path}")
-        self.ppo  = PPO.load(ppo_model_path, device="cpu")
+        self.ppo = (ppo_model_path if isinstance(ppo_model_path, PPO)
+                    else PPO.load(ppo_model_path, device="cpu"))
 
         self.imm  = IMMPredictor(config)
         self.acbf = ACBFFilter(config)
@@ -56,9 +64,9 @@ class HierarchicalController:
             p_uav: np.ndarray,
             v_uav: np.ndarray,
             target_pos: np.ndarray,
-            z_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            z_obs: np.ndarray, *, predict_positions=None) -> tuple[np.ndarray, np.ndarray]:
         """
-        Compute the safe control acceleration for one step.
+        Compute the filtered waypoint command for one step.
 
         Parameters
         ----------
@@ -69,9 +77,10 @@ class HierarchicalController:
 
         Returns
         -------
-        u_safe  : (3,)  safe acceleration (ready for env._preprocessAction)
+        u_safe  : (3,)  bounded command in the environment's k_ma scale
         obs_traj: (N+1,3) predicted obstacle trajectory (for logging)
         """
+        predict_positions = _waypoint_rollout(predict_positions, self.predict_positions)
         if not self._initialized:
             self.reset(z_obs)
 
@@ -94,19 +103,20 @@ class HierarchicalController:
             v_uav=v_uav,
             obs_traj=obs_traj,
             v_obs=v_obs,
+            predict_positions=predict_positions,
         )
 
         return u_safe, obs_traj
 
     def act_normalized(self,
-                       p_uav, v_uav, target_pos, z_obs
+                       p_uav, v_uav, target_pos, z_obs, *, predict_positions=None
                        ) -> tuple[np.ndarray, np.ndarray]:
         """
         Like act() but returns the action NORMALIZED to [-1,1] so it can be
         passed directly to UAVNavEnv.step().
         """
-        u_safe, obs_traj = self.act(p_uav, v_uav, target_pos, z_obs)
-        a_norm = np.clip(u_safe / self.k_ma, -1.0, 1.0)
+        u_safe, obs_traj = self.act(p_uav, v_uav, target_pos, z_obs, predict_positions=predict_positions)
+        a_norm = u_safe / self.k_ma
         return a_norm.reshape(1, 3).astype(np.float32), obs_traj
 
 
@@ -117,7 +127,7 @@ class PIDController:
     Proportional-Integral-Derivative position controller.
     Used as the 'PID+ACBF' baseline.
 
-    Outputs reference acceleration in the inertial frame.
+    Outputs a reference waypoint command in the inertial frame.
     """
 
     def __init__(self, config: dict):
@@ -135,7 +145,7 @@ class PIDController:
 
     def act(self, p_uav: np.ndarray, v_uav: np.ndarray,
             target_pos: np.ndarray) -> np.ndarray:
-        """Returns reference acceleration u_ref (m/s²)."""
+        """Return a bounded reference waypoint command."""
         e = target_pos - p_uav
         self._int_e  += e * self.dt
         d_e = (e - self._prev_e) / self.dt if self._prev_e is not None else np.zeros(3)
@@ -147,7 +157,8 @@ class PIDController:
 class PIDWithACBF:
     """PID + ACBF safety filter baseline controller."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, *, predict_positions=None):
+        self.predict_positions = predict_positions
         self.pid  = PIDController(config)
         self.imm  = IMMPredictor(config)
         self.acbf = ACBFFilter(config)
@@ -158,15 +169,16 @@ class PIDWithACBF:
         self.imm.reset(init_obs_pos)
         self.acbf.reset()
 
-    def act(self, p_uav, v_uav, target_pos, z_obs) -> tuple[np.ndarray, np.ndarray]:
+    def act(self, p_uav, v_uav, target_pos, z_obs, *, predict_positions=None) -> tuple[np.ndarray, np.ndarray]:
+        predict_positions = _waypoint_rollout(predict_positions, self.predict_positions)
         self.imm.update(z_obs)
         obs_traj = self.imm.predict()
         v_obs    = self.imm.estimated_velocity
         u_ref    = self.pid.act(p_uav, v_uav, target_pos)
-        u_safe   = self.acbf.filter(u_ref, p_uav, v_uav, obs_traj, v_obs)
+        u_safe   = self.acbf.filter(u_ref, p_uav, v_uav, obs_traj, v_obs, predict_positions=predict_positions)
         return u_safe, obs_traj
 
-    def act_normalized(self, p_uav, v_uav, target_pos, z_obs):
-        u_safe, obs_traj = self.act(p_uav, v_uav, target_pos, z_obs)
-        a_norm = np.clip(u_safe / self.k_ma, -1.0, 1.0)
+    def act_normalized(self, p_uav, v_uav, target_pos, z_obs, *, predict_positions=None):
+        u_safe, obs_traj = self.act(p_uav, v_uav, target_pos, z_obs, predict_positions=predict_positions)
+        a_norm = u_safe / self.k_ma
         return a_norm.reshape(1, 3).astype(np.float32), obs_traj

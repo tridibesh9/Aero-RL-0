@@ -1,272 +1,197 @@
-"""
-controllers/acbf_filter.py
-──────────────────────────
-Adaptive Control Barrier Function (ACBF) safety filter.
-
-Implements Sec. 3.3 of the paper:
-  • Second-order discrete-time CBF with N-step prediction horizon (Eq. 22-24)
-  • Adaptive coefficient γ(k) driven by a CLF (Eqs. 25-28)
-  • QP optimization problem (Eq. 29) solved via CVXPY + CLARABEL/OSQP
-
-Decision variables:
-    u     ∈ ℝ³          safe control acceleration
-    γ     ∈ [0, 1]      adaptive safety margin coefficient
-    δ     ∈ ℝ₊          CLF slack (relaxation for feasibility)
-
-QP objective (Eq. 29):
-    min  λ_u‖u - u_f‖² + λ_γ(γ - γ*)² + λ_δ·δ²
-
-Constraints:
-    [CBF-i]  g_iᵀu + γ₂·ψ₁_i·γ  ≥  rhs_i        ∀i ∈ {2,...,N}
-    [CLF]    (γ - γ*)²           ≤  δ + (1-α)·V_prev
-    [Box]    u_min ≤ u ≤ u_max
-    [Bounds] 0 ≤ γ ≤ 1,  δ ≥ 0
-
-The CBF constraints are LINEARISED around u_ref (PPO output) to keep
-the problem a convex QCQP solvable by standard solvers.
-"""
-
-from __future__ import annotations
+"""Adaptive finite-horizon barrier filter for one UAV and one obstacle."""
 import numpy as np
 
 try:
     import cvxpy as cp
-    _CVXPY_AVAILABLE = True
 except ImportError:
-    _CVXPY_AVAILABLE = False
-    print("[ACBF] WARNING: cvxpy not installed -- ACBF will pass through u_ref unchanged.")
+    cp = None
 
-from utils.math_utils import (
-    predict_uav_position_i,
-    safety_fn,
-    adaptive_gamma_star,
-    G_VEC,
-)
+from utils.config import command_bounds
+from utils.math_utils import adaptive_gamma_star, predict_uav_trajectory, safety_distance
+
+
+class FilterFailure(RuntimeError):
+    """The evaluation must stop before sending an unchecked command."""
 
 
 class ACBFFilter:
-    """
-    ACBF safety filter wrapping the QP formulation from Eq. (29).
-
-    Parameters
-    ----------
-    config : dict   loaded from configs/params.yaml
-    """
-
-    def __init__(self, config: dict):
-        self.cfg      = config
-        self.dt       = config['dt']
-        self.N        = config['N_pred']
-        self.gamma1   = config['gamma1']
-        self.gamma2   = config['gamma2']
-        self.gamma_max= config['gamma_max']
-        self.alpha    = config['alpha_clf']
-        self.lam_u    = config['lambda_u']
-        self.lam_g    = config['lambda_gamma']
-        self.lam_d    = config['lambda_delta']
-        self.u_max    = config['u_max']
-        self.u_min    = config['u_min']
-        self.ds       = (config['drone_radius']
-                         + config['obs_radius']
-                         + config['safety_cushion'])
-
-        # Persistent state: γ from previous step
-        self._gamma_prev      = 0.5
-        self._gamma_star_prev = 0.5
+    def __init__(self, config):
+        self.dt = config['dt']
+        self.N = config['N_pred']
+        self.gamma1 = config['gamma1']
+        self.gamma2 = config['gamma2']
+        self.alpha = config['alpha_clf']
+        self.closing_time_scale = config.get('closing_time_scale', config.get('gamma_max', 2.0))
+        self.lam_u = float(config['lambda_u'])
+        self.lam_g = float(config['lambda_gamma'])
+        self.lam_d = float(config['lambda_delta'])
+        self.u_min, self.u_max = command_bounds(config)
+        self.ds = safety_distance(config['drone_radius'], config['obs_radius'], config['safety_cushion'])
+        self.tol = 1e-6
+        self._problem = None
+        self.reset()
 
     def reset(self):
-        """Reset filter state (call at start of each episode)."""
-        self._gamma_prev      = 0.5
-        self._gamma_star_prev = 0.5
+        self._gamma_prev = self._gamma_star_prev = 0.5
+        self.diagnostics = {}
 
-    # ── Main interface ────────────────────────────────────────────────────────────
+    def _residuals(self, positions, obstacles, gamma):
+        # Include clearance at each future point as well as all order-2 conditions.
+        relative = positions - obstacles
+        h = 0.5 * (np.sum(relative ** 2, axis=1) - self.ds ** 2)
+        psi = h[1:] - (1 - self.gamma1) * h[:-1]
+        return np.r_[h[1:], psi[1:] - (1 - self.gamma2 * gamma) * psi[:-1]], psi
 
-    def filter(self,
-               u_ref: np.ndarray,
-               p_uav: np.ndarray, v_uav: np.ndarray,
-               obs_traj: np.ndarray,
-               v_obs: np.ndarray | None = None) -> np.ndarray:
-        """
-        Compute a safety-certified control input u(k).
+    def _linearise(self, rollout, obstacles, u0, gamma0, residual, psi):
+        """Differentiate the entire residual around (u0, gamma0), within the box."""
+        rows = np.zeros((len(residual), 4))
+        eps = 0.001 * (self.u_max - self.u_min)
+        for axis in range(3):
+            upper, lower = u0.copy(), u0.copy()
+            upper[axis] = min(u0[axis] + eps, self.u_max)
+            lower[axis] = max(u0[axis] - eps, self.u_min)
+            plus = residual if upper[axis] == u0[axis] else self._residuals(rollout(upper), obstacles, gamma0)[0]
+            minus = residual if lower[axis] == u0[axis] else self._residuals(rollout(lower), obstacles, gamma0)[0]
+            rows[:, axis] = (plus - minus) / (upper[axis] - lower[axis])
+        rows[len(obstacles) - 1:, 3] = self.gamma2 * psi[:-1]
+        return rows, rows @ np.r_[u0, gamma0] - residual
 
-        Parameters
-        ----------
-        u_ref    : (3,)    PPO (or PID) reference acceleration
-        p_uav    : (3,)    current UAV position
-        v_uav    : (3,)    current UAV velocity
-        obs_traj : (N+1,3) predicted obstacle trajectory [p̂_o(k|k),...,p̂_o(k+N|k)]
-        v_obs    : (3,) | None   estimated obstacle velocity (for γ* computation)
+    def _build_problem(self, count):
+        horizon = (count + 1) // 2
+        self._u = cp.Variable(3)
+        self._gamma = cp.Variable()
+        self._delta = cp.Variable(nonneg=True)
+        self._xi = cp.Variable(horizon - 1, nonneg=True)
+        self._ref = cp.Parameter(3)
+        self._target = cp.Parameter()
+        self._allowance = cp.Parameter(nonneg=True)
+        self._rows = cp.Parameter((count, 4))
+        self._rhs = cp.Parameter(count)
+        self._lower = cp.Parameter(4)
+        self._upper = cp.Parameter(4)
+        x = cp.hstack([self._u, self._gamma])
+        cost = (self.lam_u * cp.sum_squares(self._u - self._ref)
+                + self.lam_g * cp.square(self._gamma - self._target)
+                + self.lam_d * (cp.square(self._delta) + cp.sum_squares(self._xi)))
+        self._problem = cp.Problem(cp.Minimize(cost), [
+            x >= self._lower, x <= self._upper,
+            cp.square(self._gamma - self._target) <= self._delta + self._allowance,
+            self._rows[:horizon] @ x >= self._rhs[:horizon],
+            self._rows[horizon:] @ x + self._xi >= self._rhs[horizon:],
+        ])
 
-        Returns
-        -------
-        u_safe : (3,)  minimally-modified safe control
-        """
-        if not _CVXPY_AVAILABLE:
-            return u_ref.copy()
-
-        # Normalise all inputs to (3,) — guard against (1,3) shapes from SB3
-        u_ref   = np.array(u_ref).flatten()[:3]
-        p_uav   = np.array(p_uav).flatten()[:3]
-        v_uav   = np.array(v_uav).flatten()[:3]
-
-        # Obstacle velocity estimate (fallback to zero if unknown)
-        v_obs_est = v_obs if v_obs is not None else np.zeros(3)
-        p_obs_now = obs_traj[0]
-
-        # ── Adaptive γ* from relative kinematics (Eq. 28) ──────────────────────
-        gamma_star = adaptive_gamma_star(
-            p_uav, v_uav, p_obs_now, v_obs_est, self.gamma_max)
-        gamma_star = float(np.clip(gamma_star, 0.0, 1.0))
-
-        # ── Precompute h values at reference input (u_ref) ─────────────────────
-        h = self._compute_h_sequence(p_uav, v_uav, u_ref, obs_traj)
-
-        # ── Linearise CBF constraints for i = 2,...,N ─────────────────────────
-        A_cbf, b_cbf = self._linearise_cbf(p_uav, v_uav, u_ref, obs_traj, h)
-
-        # ── CLF V_prev ─────────────────────────────────────────────────────────
-        V_prev = (self._gamma_prev - self._gamma_star_prev) ** 2
-
-        # ── Solve QP ───────────────────────────────────────────────────────────
-        u_safe, gamma_new = self._solve_qp(u_ref, gamma_star, V_prev,
-                                           A_cbf, b_cbf)
-
-        # Store for next step
-        self._gamma_prev      = gamma_new
-        self._gamma_star_prev = gamma_star
-
-        return u_safe
-
-    # ── QP solver ────────────────────────────────────────────────────────────────
-
-    def _solve_qp(self, u_ref, gamma_star, V_prev, A_cbf, b_cbf):
-        """
-        Solve Eq. (29) with CVXPY.
-
-        Returns (u_safe, gamma_new).
-        """
-        u     = cp.Variable(3)
-        gamma = cp.Variable()
-        delta = cp.Variable()
-        n_cbf = len(A_cbf)
-        xi    = cp.Variable(n_cbf, nonneg=True)
-
-        # Objective: minimize tracking deviation, adaptive gamma tracking,
-        # and constraint violation penalty (Table 1: lambda_delta = 1e4)
-        obj = (self.lam_u * cp.sum_squares(u - u_ref)
-               + self.lam_g * cp.square(gamma - gamma_star)
-               + self.lam_d * cp.square(delta)
-               + self.lam_d * cp.sum_squares(xi))
-
-        constraints = [
-            u >= self.u_min,
-            u <= self.u_max,
-            gamma >= 0.0,
-            gamma <= 1.0,
-            delta >= 0.0,
-            # CLF constraint (Eq. 26): (γ-γ*)² ≤ δ + (1-α)·V_prev
-            cp.square(gamma - gamma_star) <= delta + (1 - self.alpha) * V_prev,
-        ]
-
-        # CBF constraints with slack: A_cbf[i] @ [u; gamma] + xi[i] ≥ b_cbf[i]
-        xu = cp.hstack([u, gamma])  # shape (4,)
-        for idx, (row, rhs) in enumerate(zip(A_cbf, b_cbf)):
-            constraints.append(row @ xu + xi[idx] >= rhs)
-
-        prob = cp.Problem(cp.Minimize(obj), constraints)
-
-        # Try multiple solvers for robustness
-        for solver in [cp.CLARABEL, cp.OSQP, cp.SCS]:
+    def _solve(self, rows, rhs, ref, target, allowance, lower, upper):
+        if self._problem is None or self._rhs.size != len(rhs):
+            self._build_problem(len(rhs))
+        self._rows.value, self._rhs.value = rows, rhs
+        self._ref.value, self._target.value, self._allowance.value = ref, target, allowance
+        self._lower.value, self._upper.value = lower, upper
+        attempts = []
+        for solver in ('CLARABEL', 'SCS'):
             try:
-                prob.solve(solver=solver, warm_start=True, verbose=False)
-                if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
-                    u_val     = np.array(u.value, dtype=float).flatten()
-                    gamma_val = float(gamma.value)
-                    return np.clip(u_val, self.u_min, self.u_max), gamma_val
-            except Exception:
+                self._problem.solve(solver=solver, warm_start=True, verbose=False)
+            except cp.error.SolverError as err:
+                attempts.append(f"{solver}: {err}")
                 continue
+            status = self._problem.status
+            attempts.append(f"{solver}: {status}")
+            self.diagnostics['inaccurate_seen'] |= status == cp.OPTIMAL_INACCURATE
+            if status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+                continue
+            u, gamma = self._u.value, self._gamma.value
+            slack = np.r_[np.zeros(len(rhs) - self._xi.size), self._xi.value]
+            delta = self._delta.value
+            if not np.isfinite(np.r_[u, gamma, delta, slack]).all():
+                continue
+            x = np.r_[u, gamma]
+            primal_error = max(np.max(lower - x), np.max(x - upper),
+                               (gamma - target)**2 - delta - allowance, -delta, -slack.min(),
+                               np.max(rhs - rows @ x - slack))
+            if primal_error <= self.tol:
+                self.diagnostics.update(solver=solver, solver_status=status,
+                                        used_backup_solver=(self.diagnostics['used_backup_solver'] or len(attempts) > 1))
+                self.diagnostics['solver_attempts'].extend(attempts)
+                return np.clip(u, self.u_min, self.u_max), float(np.clip(gamma, 0, 1)), slack, float(delta)
+        self.diagnostics.update(solver_status='solver_failure', used_backup_solver=True)
+        self.diagnostics['solver_attempts'].extend(attempts)
+        raise FilterFailure("No solver returned a finite solution within tolerance: " + ' | '.join(attempts))
 
-        # Fallback: if numerical failure occurs, return reference
-        print("[ACBF] Solver exception -- returning u_ref")
-        return u_ref.copy(), self._gamma_prev
+    def filter(self, u_ref, p_uav, v_uav, obs_traj, v_obs=None, *, predict_positions=None):
+        """Filter a held waypoint command using the supplied plant rollout.
 
-    # ── Precompute helpers ────────────────────────────────────────────────────────
-
-    def _compute_h_sequence(self, p0, v0, u_ref, obs_traj) -> np.ndarray:
+        Standalone acceleration-model studies may omit predict_positions. The
+        flight evaluator always supplies the environment's waypoint/PID rollout.
         """
-        h[i] = ½‖p̂_uav(k+i|k) - p̂_obs(k+i|k)‖² - d_s²   (Eq. 22)
-        evaluated at control input u_ref.
-        """
-        N = min(self.N, len(obs_traj) - 1)
-        h = np.zeros(N + 1)
-        for i in range(N + 1):
-            p_i = predict_uav_position_i(p0, v0, u_ref, self.dt, i)
-            h[i] = safety_fn(p_i, obs_traj[i], self.ds)
-        return h
+        ref = np.clip(np.asarray(u_ref, dtype=float).reshape(3), self.u_min, self.u_max)
+        obstacles = np.asarray(obs_traj, dtype=float)[:self.N + 1]
+        steps = len(obstacles) - 1
+        self.diagnostics = dict(solver='', solver_status='unavailable', used_backup_solver=False,
+                                solver_attempts=[], inaccurate_seen=False, reference=ref.copy(), slack_max=None,
+                                clf_slack=None, predicted_violation=None, gamma=None,
+                                linearization_margin=0.0, solve_passes=0)
+        if cp is None:
+            raise FilterFailure("CVXPY is unavailable")
+        if steps < 2 or obstacles.shape != (steps + 1, 3) or not np.isfinite(obstacles).all():
+            raise FilterFailure("Invalid obstacle prediction horizon")
+        v_obs = np.zeros(3) if v_obs is None else v_obs
+        if not all(np.isfinite(value).all() for value in (u_ref, p_uav, v_uav, v_obs)):
+            raise FilterFailure("Non-finite input to the safety filter")
 
-    def _linearise_cbf(self, p0, v0, u_ref, obs_traj, h) -> tuple:
-        """
-        Build linearised CBF constraint rows for i ∈ {2, ..., N}.
+        def rollout(u):
+            if predict_positions is not None:
+                positions = predict_positions(u, steps)
+            else:
+                positions = predict_uav_trajectory(p_uav, v_uav, u, self.dt, steps)
+            if positions.shape != (steps + 1, 3) or not np.isfinite(positions).all():
+                raise FilterFailure("Invalid UAV forecast")
+            return positions
 
-        Linearisation of h_i(u) around u_ref:
-            h_i(u) ≈ h_i(u_ref) + g_iᵀ(u - u_ref)
-
-        where g_i = ∇_u h_i = c_i·dt²·(p̂_i - p̂_o_i)  with c_i = i(i-1)/2
-
-        Constraint from Eq. (24):
-            Δψ₁_m ≥ -γ₂·γ·ψ₁_m  for m = i - 2
-            where ψ₁_m = h_{m+1} - (1-γ₁)·h_m
-            → h_i(u) ≥ (1-γ₁)·h_{i-1} + ψ₁_m - γ₂·γ·ψ₁_m
-            → g_iᵀu + γ₂·ψ₁_m·γ ≥ (1-γ₁)·h_{i-1} + ψ₁_m - h_i(u_ref) + g_iᵀu_ref
-
-        Decision-variable vector: [u(3), γ(1)]  → each row has shape (4,)
-        """
-        N   = min(self.N, len(obs_traj) - 1)
-        dt  = self.dt
-        rows = []
-        rhs  = []
-
-        # Precompute psi1 sequence along prediction horizon:
-        # psi1[m] = h[m+1] - (1 - gamma1) * h[m]
-        psi1 = np.zeros(N)
-        for m in range(N):
-            psi1[m] = h[m + 1] - (1.0 - self.gamma1) * h[m]
-
-        for i in range(2, N + 1):
-            m = i - 2                        # prediction step index corresponding to psi1
-            psi1_m = psi1[m]
-
-            c_i  = i * (i - 1) / 2          # coefficient for acceleration term
-            p_i  = predict_uav_position_i(p0, v0, u_ref, dt, i)
-            diff = p_i - obs_traj[i]          # (3,) relative position vector
-
-            # Gradient of h_i w.r.t. u
-            g_i = c_i * (dt ** 2) * diff     # (3,)
-
-            # Build row [g_iᵀ, γ₂·ψ₁_m] for decision vector [u; γ]
-            row = np.zeros(4)
-            row[:3] = g_i
-            row[3]  = self.gamma2 * psi1_m
-
-            # RHS: (1 - γ₁)·h_{i-1} + ψ₁_m - h_i(u_ref) + g_iᵀu_ref
-            rhs_i = ((1.0 - self.gamma1) * h[i - 1]
-                     + psi1_m
-                     - h[i]
-                     + float(g_i @ u_ref))
-
-            rows.append(row)
-            rhs.append(rhs_i)
-
-        if not rows:
-            # Horizon too short — add a no-op constraint
-            rows.append(np.zeros(4))
-            rhs.append(-1e6)
-
-        return np.array(rows), np.array(rhs)
-
-    # ── Diagnostics ──────────────────────────────────────────────────────────────
+        target = adaptive_gamma_star(p_uav, v_uav, obstacles[0], v_obs, self.closing_time_scale)
+        allowance = (1 - self.alpha) * (self._gamma_prev - self._gamma_star_prev)**2
+        u, gamma = ref.copy(), target
+        positions = rollout(u)
+        residual, psi = self._residuals(positions, obstacles, gamma)
+        if not np.isfinite(residual).all():
+            raise FilterFailure("Non-finite nominal barrier residual")
+        slack = np.zeros_like(residual)
+        delta = 0.0
+        if np.min(residual) >= 0:
+            # The reference attains the zero lower bound of the objective.
+            self.diagnostics['solver_status'] = 'reference_feasible'
+        else:
+            margin = np.zeros_like(residual)
+            box_lo = np.r_[np.full(3, self.u_min), 0.]
+            box_hi = np.r_[np.full(3, self.u_max), 1.]
+            for iteration in range(6):
+                rows, rhs = self._linearise(rollout, obstacles, u, gamma, residual, psi)
+                self.diagnostics['solve_passes'] += 1
+                self.diagnostics['linearization_margin'] = float(margin.max())
+                centre = np.r_[u, gamma]
+                radius = (box_hi - box_lo) * 0.25**iteration
+                lower, upper = np.maximum(box_lo, centre-radius), np.minimum(box_hi, centre+radius)
+                u, gamma, slack, delta = self._solve(rows, rhs + margin, ref, target, allowance, lower, upper)
+                positions = rollout(u)
+                residual, psi = self._residuals(positions, obstacles, gamma)
+                if not np.isfinite(residual).all():
+                    raise FilterFailure("Non-finite verification rollout")
+                self.diagnostics.update(slack_max=float(slack.max()), clf_slack=delta, gamma=gamma,
+                                        predicted_violation=float(max(0, -residual.min())))
+                deficit = -(residual + slack)
+                if deficit.max() <= self.tol:
+                    break
+                # Carry the observed remainder into the next subproblem so
+                # successive tangents cannot repeatedly accept the same error.
+                margin += np.where(deficit > self.tol, deficit + self.tol, 0)
+            else:
+                self.diagnostics['solver_status'] = 'nonlinear_check_failed'
+                raise FilterFailure("Rollout exceeded the allowed barrier slack after relinearization")
+        self.diagnostics.update(slack_max=float(slack.max()), clf_slack=delta, gamma=gamma,
+                                predicted_violation=float(max(0, -residual.min())),
+                                next_position=positions[1].tolist(),
+                                predicted_min_dist=float(np.linalg.norm(positions[1:] - obstacles[1:], axis=1).min()))
+        self._gamma_prev, self._gamma_star_prev = gamma, target
+        return u
 
     @property
-    def gamma(self) -> float:
-        """Most recent adaptive coefficient γ(k)."""
+    def gamma(self):
         return self._gamma_prev

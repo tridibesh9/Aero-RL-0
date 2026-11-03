@@ -1,225 +1,128 @@
-"""
-evaluate.py
-────────────
-Evaluate all three controllers (RL+ACBF, PID+ACBF, Pure RL) across all three
-scenario cases and reproduce Table 3 + Figures 5-13 from the paper.
-
-Usage
-─────
-    python evaluate.py --model results/ppo_final.zip [--case 1|2|3|all] [--gui]
-
-Output
-──────
-    results/eval/case{N}/3d_traj.png
-    results/eval/case{N}/min_dist.png
-    results/eval/case{N}/{method}_states.png
-    results/eval/summary_table.txt
-"""
-
+"""Evaluate the three navigation controllers on the three moving-obstacle cases."""
 import argparse
-import os
-import sys
-import time
+import contextlib
+import io
+import json
+from pathlib import Path
+from time import perf_counter
 
 import numpy as np
-import yaml
+from stable_baselines3 import PPO
 
-sys.path.insert(0, os.path.dirname(__file__))
-
-from envs.UAVNavEnv          import UAVNavEnv
+from controllers.acbf_filter import FilterFailure
 from controllers.hierarchical_ctrl import HierarchicalController, PIDWithACBF
-from utils.logger            import (EpisodeLogger, plot_3d_trajectories,
-                                     plot_min_distance, plot_states,
-                                     print_summary_table)
-from utils.math_utils        import safety_distance
+from envs.UAVNavEnv import UAVNavEnv
+from scenarios import case1_linear, case2_accel, case3_figure8
+from utils.config import load_config, new_run_dir, write_run_manifest
+from utils.logger import (EpisodeLogger, plot_3d_trajectories, plot_min_distance,
+                          plot_states, print_summary_table)
 
-import scenarios.case1_linear  as case1
-import scenarios.case2_accel   as case2
-import scenarios.case3_figure8 as case3
+SCENARIOS = {1: case1_linear, 2: case2_accel, 3: case3_figure8}
 
-SCENARIOS = {1: case1, 2: case2, 3: case3}
-
-
-# ── CLI ────────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Evaluate hierarchical safe RL controller")
-    p.add_argument("--model",  default="results/ppo_final.zip",
-                   help="Path to trained PPO model .zip")
-    p.add_argument("--config", default="configs/params.yaml")
-    p.add_argument("--case",   default="all",
-                   help="Which case(s) to run: 1, 2, 3, or all")
-    p.add_argument("--gui",    action="store_true",
-                   help="Open PyBullet GUI during evaluation")
-    p.add_argument("--max_steps", type=int, default=None,
-                   help="Override max episode steps")
-    return p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model', default='results/ppo_final.zip')
+    parser.add_argument('--config', default='configs/params.yaml')
+    parser.add_argument('--case', choices=('1', '2', '3', 'all'), default='all')
+    parser.add_argument('--gui', action='store_true')
+    parser.add_argument('--max_steps', type=int)
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--output-dir', help='New directory. Defaults to a dated run in results/evaluations.')
+    return parser.parse_args()
 
 
-# ── Episode runner ─────────────────────────────────────────────────────────────
+def run_episode(env, controller, scenario_mod, label, ds, max_steps, *, ppo=None, seed=42):
+    if max_steps < 1:
+        raise ValueError('max_steps must be positive')
+    obs, info = env.reset(seed=seed)
+    if controller is not None:
+        controller.reset(info['obs_pos'])
+    elif ppo is None:
+        ppo = env._pure_ppo  # compatibility with previous run_episode callers
 
-def run_episode(env: UAVNavEnv,
-                controller,        # HierarchicalController | PIDWithACBF | None
-                scenario_mod,      # case1/2/3 module
-                label: str,
-                ds: float,
-                max_steps: int) -> EpisodeLogger:
-    """
-    Run one evaluation episode and collect metrics.
-
-    For 'Pure RL', controller=None and we use the raw PPO inside a separately
-    loaded model passed as `ppo_model` attribute on the env.
-    """
-    scfg = scenario_mod.SCENARIO_CONFIG
-    goal = scfg['goal_pos']
-
-    obs, info = env.reset()
-    p_uav, v_uav = env.get_uav_state()
-
-    if hasattr(controller, 'reset'):
-        controller.reset(scfg['obs_init_pos'])
-
-    log = EpisodeLogger(label)
-    t   = 0.0
-    dt  = env.CTRL_TIMESTEP
-
-    for step in range(max_steps):
-        p_uav, v_uav = env.get_uav_state()
-        z_obs        = env.get_obs_pos()
-
+    goal = scenario_mod.SCENARIO_CONFIG['goal_pos']
+    log = EpisodeLogger(label, env.cfg)
+    if not np.isclose(ds, log.safety_distance):
+        raise ValueError('Logger and controller must use the same safety distance')
+    log.log(0.0, info['pos'], info['vel'], info['command'], info['obs_pos'])
+    for _ in range(max_steps):
+        start = perf_counter()
+        diagnostics = None
         if controller is None:
-            # Pure RL: use PPO directly (no safety filter)
-            action_norm, _ = env._pure_ppo.predict(obs, deterministic=True)
-            action_norm = np.array(action_norm).reshape(1, 3).astype(np.float32)
-            u_logged = env.cfg['k_ma'] * action_norm.flatten()
-            obs_traj_log = np.tile(z_obs, (env.cfg['N_pred']+1, 1))
+            action, _ = ppo.predict(obs, deterministic=True)
         else:
-            action_norm, obs_traj_log = controller.act_normalized(
-                p_uav, v_uav, goal, z_obs)
-            u_logged = env.cfg['k_ma'] * action_norm.flatten()
-
-        log.log(t, p_uav, v_uav, u_logged, z_obs)
-
-        obs, reward, terminated, truncated, info = env.step(action_norm)
-        t += dt
-
+            try:
+                action, _ = controller.act_normalized(info['pos'], info['vel'], goal, info['obs_pos'],
+                                                      predict_positions=env.predict_positions)
+            except FilterFailure as err:
+                log.stop_reason = 'filter_failure'
+                log.failed_attempt = {k: v for k, v in controller.acbf.diagnostics.items() if k != 'reference'}
+                log.failed_attempt.update(reason=str(err), time_s=info['t'],
+                                          control_ms=1000 * (perf_counter() - start))
+                break
+            diagnostics = controller.acbf.diagnostics
+        compute_ms = 1000 * (perf_counter() - start)
+        obs, _, terminated, truncated, info = env.step(np.asarray(action, dtype=np.float32).reshape(1, 3))
+        log.log(info['t'], info['pos'], info['vel'], info['command'], info['obs_pos'], diagnostics, compute_ms)
         if terminated or truncated:
+            log.reached_goal = info['is_success']
+            log.stop_reason = info['termination_reason']
             break
-
     return log
 
 
-# ── Per-case evaluation ────────────────────────────────────────────────────────
-
-def evaluate_case(case_num: int, cfg: dict, args, summary: dict):
-    scn = SCENARIOS[case_num]
-    scfg = scn.SCENARIO_CONFIG
-    print(f"\n{'='*60}")
-    print(f"  {scfg['name']}")
-    print('='*60)
-
-    ds       = safety_distance(cfg['drone_radius'], cfg['obs_radius'], cfg['safety_cushion'])
-    max_steps= args.max_steps or cfg['max_episode_steps']
-    out_dir  = f"results/eval/case{case_num}"
-    os.makedirs(out_dir, exist_ok=True)
-
-    def make_env(gui=False):
-        return UAVNavEnv(
-            config=cfg,
-            obstacle_policy=scn.obstacle_policy,
-            target_pos=scfg['goal_pos'],
-            obstacle_init_pos=scfg['obs_init_pos'],
-            gui=gui,
-        )
-
+def evaluate_case(case_num, cfg, args, summary, model=None):
+    scenario = SCENARIOS[case_num]
+    scfg = scenario.SCENARIO_CONFIG
+    ds = cfg['drone_radius'] + cfg['obs_radius'] + cfg['safety_cushion']
+    steps = args.max_steps if args.max_steps is not None else cfg['max_episode_steps']
+    if model is None:
+        model = PPO.load(args.model, device='cpu')
+    output = Path(args.output_dir) / f'case{case_num}'
+    output.mkdir()
     logs = []
+    for label, controller in [('RL+ACBF', HierarchicalController(model, cfg)),
+                              ('PID+ACBF', PIDWithACBF(cfg)), ('Pure RL', None)]:
+        env = UAVNavEnv(cfg, obstacle_policy=scenario.obstacle_policy, target_pos=scfg['goal_pos'],
+                        obstacle_init_pos=scfg['obs_init_pos'], start_pos=scfg['start_pos'],
+                        gui=args.gui and label == 'RL+ACBF')
+        try:
+            log = run_episode(env, controller, scenario, label, ds, steps, ppo=model, seed=args.seed)
+        finally:
+            env.close()
+        logs.append(log)
+        stem = label.replace('+', '_').replace(' ', '_')
+        log.write_csv(output / f'{stem}.csv', scfg['goal_pos'])
+        summary[f'Case{case_num} {label}'] = log.summary(scfg['goal_pos'])
+        print(f"{scfg['name']} / {label}: {log.stop_reason}, {log.mission_time():.2f} s", flush=True)
+        plot_states(log, output / f'{stem}_states.png')
+    plot_3d_trajectories(logs, scfg['goal_pos'], scfg['start_pos'], ds, output / '3d_traj.png')
+    plot_min_distance(logs, ds, output / 'min_dist.png')
 
-    # ── 1. RL + ACBF ──────────────────────────────────────────────────────────
-    print("\n[Case %d] Running RL+ACBF ..." % case_num)
-    env = make_env(gui=args.gui)
-    ctrl = HierarchicalController(args.model, cfg)
-    t0 = time.time()
-    log_rl_acbf = run_episode(env, ctrl, scn, "RL+ACBF", ds, max_steps)
-    train_s = 0  # training time logged separately by train_ppo.py
-    env.close()
-    logs.append(log_rl_acbf)
-    print(f"  min_dist={log_rl_acbf.min_distance():.3f}m  "
-          f"collision={'YES' if log_rl_acbf.collision else 'no'}  "
-          f"t={log_rl_acbf.mission_time():.1f}s")
-
-    # ── 2. PID + ACBF ─────────────────────────────────────────────────────────
-    print("[Case %d] Running PID+ACBF ..." % case_num)
-    env = make_env()
-    ctrl_pid = PIDWithACBF(cfg)
-    log_pid_acbf = run_episode(env, ctrl_pid, scn, "PID+ACBF", ds, max_steps)
-    env.close()
-    logs.append(log_pid_acbf)
-    print(f"  min_dist={log_pid_acbf.min_distance():.3f}m  "
-          f"collision={'YES' if log_pid_acbf.collision else 'no'}  "
-          f"t={log_pid_acbf.mission_time():.1f}s")
-
-    # ── 3. Pure RL (no safety filter) ─────────────────────────────────────────
-    print("[Case %d] Running Pure RL ..." % case_num)
-    from stable_baselines3 import PPO as _PPO
-    ppo_model = _PPO.load(args.model, device="cpu")
-    k_ma = cfg['k_ma']
-
-    env_pure = make_env()
-    obs, _ = env_pure.reset()
-    # Attach PPO so run_episode can reach it
-    env_pure._pure_ppo = ppo_model
-    log_pure_rl = run_episode(env_pure, None, scn, "Pure RL", ds, max_steps)
-    env_pure.close()
-    logs.append(log_pure_rl)
-    print(f"  min_dist={log_pure_rl.min_distance():.3f}m  "
-          f"collision={'YES' if log_pure_rl.collision else 'no'}  "
-          f"t={log_pure_rl.mission_time():.1f}s")
-
-    # ── Plots ──────────────────────────────────────────────────────────────────
-    plot_3d_trajectories(logs, scfg['goal_pos'], scfg['start_pos'],
-                         ds, f"{out_dir}/3d_traj.png")
-    plot_min_distance(logs, ds, f"{out_dir}/min_dist.png")
-    for lg in logs:
-        plot_states(lg, f"{out_dir}/{lg.label.replace('+','_').replace(' ','_')}_states.png")
-
-    # ── Summary dict ──────────────────────────────────────────────────────────
-    for lg in logs:
-        key = f"Case{case_num} {lg.label}"
-        summary[key] = {
-            'min_dist':  lg.min_distance(),
-            'collision': lg.collision,
-            'mission_t': lg.mission_time(),
-        }
-
-
-# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
-
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
-
-    os.makedirs("results/eval", exist_ok=True)
-
-    cases = [1, 2, 3] if args.case == "all" else [int(args.case)]
+    cfg = load_config(args.config)
+    if args.max_steps is not None and args.max_steps < 1:
+        raise ValueError('--max_steps must be positive')
+    model = PPO.load(args.model, device='cpu')
+    args.output_dir = new_run_dir(args.output_dir, 'results/evaluations')
+    cases = list(SCENARIOS) if args.case == 'all' else [int(args.case)]
+    write_run_manifest(args.output_dir, cfg, args.model, cases=cases, seed=args.seed,
+                       max_steps=args.max_steps or cfg['max_episode_steps'], model_timesteps=model.num_timesteps,
+                       uav_forecast='PyBullet CF2X waypoint/PID free flight')
     summary = {}
-
-    for c in cases:
-        evaluate_case(c, cfg, args, summary)
-
-    print_summary_table(summary)
-
-    # Save summary to file
-    with open("results/eval/summary_table.txt", "w") as f:
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            print_summary_table(summary)
-        f.write(buf.getvalue())
-
-    print("\n[Eval] All results saved to results/eval/")
+    for case_num in cases:
+        evaluate_case(case_num, cfg, args, summary, model)
+        (args.output_dir / 'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False), encoding='utf-8')
+    table = io.StringIO()
+    with contextlib.redirect_stdout(table):
+        print_summary_table(summary)
+    print(table.getvalue())
+    (args.output_dir / 'summary_table.txt').write_text(f"Model: {args.model}\n" + table.getvalue(), encoding='utf-8')
+    print(f"Results saved to {args.output_dir}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

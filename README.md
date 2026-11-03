@@ -1,36 +1,30 @@
-# Aero-RL: Hierarchical Safe Reinforcement Learning for UAVs
+# Aero-RL · UAV navigation in simulation
 
-Implementation of **"Hierarchical Safe Reinforcement Learning Control for UAVs via Adaptive Control Barrier Function and Interacting Multiple Model"** (*Gao & Sun, Advanced Mechatronics, 2026*).
+This project compares a PPO policy, PPO with an adaptive control barrier function (ACBF), and PID with the same ACBF. Each drone must reach a goal while a spherical obstacle moves on a straight, accelerating, or figure-eight path. The controller architecture follows [Gao and Sun (2026)](https://doi.org/10.53941/am.2026.100003). The implementation and experiments used here are described in the [technical guide](CODEBASE_OVERVIEW.md).
 
----
+## Evaluate an existing checkpoint
 
-## Quick Navigation
+Run these commands from the project directory with the project's Python environment.
 
-* 📖 **Full Codebase Guide & Technical Reference**: See [CODEBASE_OVERVIEW.md](file:///C:/Users/Tridibesh/Desktop/BTP_PPO_Base/CODEBASE_OVERVIEW.md) for complete mathematical formulations, system diagrams, file inventories, and control explanations.
-* ⚙️ **Hyperparameters**: [configs/params.yaml](file:///C:/Users/Tridibesh/Desktop/BTP_PPO_Base/configs/params.yaml)
-* 🚀 **Evaluation Script**: [evaluate.py](file:///C:/Users/Tridibesh/Desktop/BTP_PPO_Base/evaluate.py)
-* 🏋️ **Training Script**: [train_ppo.py](file:///C:/Users/Tridibesh/Desktop/BTP_PPO_Base/train_ppo.py)
-
----
-
-## Key Features
-
-1. **Upper Layer (PPO)**: Learns task-level optimal 3D goal-reaching navigation using Stable-Baselines3 and PyBullet.
-2. **Lower Layer (IMM Predictor)**: Estimates dynamic obstacle states using a 3D Interacting Multiple Model filter (Constant Velocity, Constant Acceleration, Coordinated Turn) and outputs $N$-step trajectory predictions.
-3. **Safety Certification (ACBF QP Filter)**: Enforces high-order discrete Control Barrier Function (CBF) constraints with an adaptive margin coefficient $\gamma^*(k)$ regulated via a Control Lyapunov Function (CLF), solved at 20 Hz using CVXPY.
-4. **Zero-Shot Dynamic Generalization**: The RL agent is trained only on static obstacles, while the lower-layer ACBF filter dynamically guarantees collision avoidance against complex linear, accelerating, and lemniscate (figure-8) obstacle maneuvers without retraining.
-
----
-
-## Quick Start
-
-### 1. Evaluate Pre-trained Model
 ```powershell
 python evaluate.py --model results/ppo_final.zip --case all
+python train_ppo.py --validate-only results/ppo_final.zip
 ```
-Plots and tables will be generated in `results/eval/`.
 
-### 2. Train PPO Agent
+The first command runs the three moving-obstacle cases. The second checks four fixed navigation goals with the obstacle parked outside the flight volume. Both use deterministic inference. Each invocation creates a new run directory under `results/evaluations` or `results/validation`. Use `--output-dir` to supply a new destination.
+
+Each benchmark run contains a model and source fingerprint, a configuration snapshot, a text and JSON summary, per-step CSVs, and plots. Read goal completion and stop reason alongside centre-to-centre distance. With the default settings, the geometric collision threshold is 0.40 m and the safety buffer begins below 0.50 m.
+
+The reviewed final checkpoint records 2,015,232 prior training steps. On the four-goal validation suite it reached 0/4 goals. Use the [checked benchmark summary](results/evaluations/btp_review_20261103/summary_table.txt) and [goal validation record](results/validation/btp_review_20261103/validation.jsonl) for the local November 2026 experiments. Model archives and generated runs are stored outside version control.
+
+## Training entry point
+
+A future training run can be started with `python train_ppo.py --timesteps 1000000 --seed 42 --n_envs 4`. It creates a separate directory under `results/training`. Training starts with nearby goals and progresses to the full static-obstacle task. Checkpoint selection uses validation arrivals, final error, and elapsed time. A `validated_model.zip` requires arrivals at every validation goal. Its scope is goal tracking on that suite.
+
+## Verification
+
 ```powershell
-python train_ppo.py --timesteps 1000000 --seed 42 --n_envs 4
+python -B -m unittest discover -s tests -v
 ```
+
+The regression suite covers the motion forecasts, barrier equations, failure handling, episode resets, metrics, and checkpoint selection. Runtime dependencies include NumPy, PyYAML, PyTorch, Stable-Baselines3, Gymnasium, PyBullet, gym-pybullet-drones, CVXPY with Clarabel and SCS, and Matplotlib. Exact package versions are recorded in each run manifest.

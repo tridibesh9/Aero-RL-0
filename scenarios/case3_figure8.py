@@ -30,7 +30,7 @@ SCENARIO_CONFIG = {
     "start_pos":       START_POS,
     "goal_pos":        GOAL_POS,
     "obs_init_pos":    OBS_INIT,
-    "obs_velocity":    np.zeros(3),          # instantaneous vel at t=0
+    "obs_velocity":    np.array([_A * _OMG, _A * _OMG, 0.0]),
     "description":     "Obstacle on a figure-8 (lemniscate) trajectory.",
 }
 
@@ -50,7 +50,7 @@ def obstacle_policy(t: float, p_obs: np.ndarray) -> np.ndarray:
 
 
 def obstacle_velocity(t: float) -> np.ndarray:
-    """Analytical velocity  (used for γ* computation in ACBF)."""
+    """Ground-truth velocity for validation of the IMM estimate."""
     vx = _A * _OMG * np.cos(_OMG * t)
     vy = _A * _OMG * (np.cos(_OMG * t)**2 - np.sin(_OMG * t)**2)
     vz = 0.0

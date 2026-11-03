@@ -7,8 +7,8 @@ Architecture
 ────────────
 • Inherits from gym_pybullet_drones BaseRLAviary (ActionType.PID, ObservationType.KIN)
 • Overrides obs space → 6-D  [v(k)ᵀ, e(k)ᵀ]  (Sec. 3.1)
-• Overrides action space → 3-D normalized acceleration  a ∈ [-1,1]³
-• Overrides _preprocessAction → converts acceleration to PID target position
+• Overrides action space → 3-D normalized waypoint command a ∈ [-1,1]³
+• Overrides _preprocessAction → converts command to PID target position
 • Overrides reward → composite r(k) = r_tr + r_ds + r_bp + r_tp  (Eqs. 9-13)
 • Manages a single spherical obstacle (dynamic or static)
 
@@ -19,6 +19,8 @@ unconstrained goal-reaching.  At evaluation time, the HierarchicalController
 intercepts actions before they reach the env.
 """
 
+from copy import deepcopy
+
 import numpy as np
 import pybullet as p
 from gymnasium import spaces
@@ -26,6 +28,7 @@ from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import (
     DroneModel, Physics, ActionType, ObservationType
 )
+from utils.config import command_bounds, validate_config
 
 
 class UAVNavEnv(BaseRLAviary):
@@ -55,8 +58,18 @@ class UAVNavEnv(BaseRLAviary):
                  obstacle_policy=None,
                  target_pos=None,
                  obstacle_init_pos=None,
-                 gui: bool = False):
+                 gui: bool = False,
+                 start_pos=None):
+        validate_config(config)
         self.cfg = config
+        self.command_min, self.command_max = command_bounds(config)
+        self.start_pos = np.asarray(self.INIT_XYZ[0] if start_pos is None else start_pos,
+                                    dtype=float).reshape(3).copy()
+        if not np.isfinite(self.start_pos).all() or np.any(np.abs(self.start_pos) > config['flight_bounds']) or self.start_pos[2] < 0.05:
+            raise ValueError("Drone start must lie inside the flight volume")
+        self.training_radius = None
+        self._episode_radius = None
+        self._forecast_env = None
         self.obstacle_policy    = obstacle_policy
         self._target_pos_fixed  = (np.array(target_pos, dtype=np.float64)
                                    if target_pos is not None else None)
@@ -77,7 +90,7 @@ class UAVNavEnv(BaseRLAviary):
         super().__init__(
             drone_model=DroneModel.CF2X,
             num_drones=1,
-            initial_xyzs=self.INIT_XYZ,
+            initial_xyzs=self.start_pos.reshape(1, 3),
             initial_rpys=self.INIT_RPY,
             physics=Physics.PYB,
             pyb_freq=config['pyb_freq'],
@@ -87,6 +100,10 @@ class UAVNavEnv(BaseRLAviary):
             obs=ObservationType.KIN,
             act=ActionType.PID,
         )
+        for key, value in (("mass", self.M), ("g", self.G)):
+            if key in config and not np.isclose(float(config[key]), value):
+                self.close()
+                raise ValueError(f"{key} is set by the CF2X simulator ({value})")
 
     # ── Spaces ───────────────────────────────────────────────────────────────────
 
@@ -102,7 +119,7 @@ class UAVNavEnv(BaseRLAviary):
         return spaces.Box(low=lo, high=hi, dtype=np.float32)
 
     def _actionSpace(self):
-        """3-D normalized acceleration  a ∈ [-1, 1]³."""
+        """3-D normalized waypoint command a ∈ [-1, 1]³."""
         lo = np.full((1, 3), -1.0, dtype=np.float32)
         hi = np.full((1, 3),  1.0, dtype=np.float32)
         # Initialise action buffer with zeros (required by BaseRLAviary)
@@ -129,15 +146,14 @@ class UAVNavEnv(BaseRLAviary):
         """
         Convert normalized PPO action → PID target position.
 
-        a ∈ [-1,1]³  →  u_f = k_ma · a  (reference acceleration, Eq. 8)
-        target_pos = p(k) + v(k)·Δt + u_f·Δt²   (1-step kinematic look-ahead)
+        a ∈ [-1,1]³ gives a bounded waypoint command u = k_ma * a.
+        The waypoint offset in metres is u * [0.5, 0.5, 0.15].
 
         The PID controller then computes RPMs to reach target_pos.
         """
         self.action_buffer.append(action)
 
         k_ma = self.cfg['k_ma']
-        dt   = self.CTRL_TIMESTEP
 
         state   = self._getDroneStateVector(0)
         cur_pos = state[0:3]
@@ -146,13 +162,9 @@ class UAVNavEnv(BaseRLAviary):
         cur_ang_vel = state[13:16]
 
         a = action[0]                               # (3,) normalized
-        u_f = k_ma * np.clip(a, -1.0, 1.0)         # reference acceleration (m/s^2)
+        u_f = np.clip(k_ma * a, self.command_min, self.command_max)
 
-        # Lookahead waypoint proportional to commanded maneuvering acceleration:
-        # u_f=0 produces perfect hover (target_pos = cur_pos).
-        # Under maximum acceleration (u_f=1.0), places target 0.5m ahead horizontally
-        # and 0.15m vertically, giving stable ~6 deg tilt and smooth ~1.2 m/s forward
-        # flight with controlled ~0.25 m/s climb/descent rate matching the paper.
+        # Keep the waypoint interface used by the existing trained policies.
         lookahead = np.array([0.5, 0.5, 0.15])
         target_pos = cur_pos + u_f * lookahead
 
@@ -224,6 +236,16 @@ class UAVNavEnv(BaseRLAviary):
         pos     = state[0:3]
         vel     = state[10:13]
         dist_to_obs = float(np.linalg.norm(pos - self.obs_pos))
+        goal_error = float(np.linalg.norm(self.target_pos - pos))
+        reached = goal_error < self.cfg['acceptance_radius']
+        if reached:
+            reason = "goal"
+        elif np.any(np.abs(pos) > self.cfg['flight_bounds']) or pos[2] < 0.05:
+            reason = "out_of_bounds"
+        elif self._step_count >= self.cfg['max_episode_steps']:
+            reason = "timeout"
+        else:
+            reason = None
         return {
             'pos':          pos.copy(),
             'vel':          vel.copy(),
@@ -231,9 +253,20 @@ class UAVNavEnv(BaseRLAviary):
             'dist_to_obs':  dist_to_obs,
             'step':         self._step_count,
             't':            self._t,
+            'goal_error':   goal_error,
+            'is_success':   reached,
+            'termination_reason': reason,
+            'command':      self._prev_u.copy(),
+            'episode_radius': self._episode_radius,
         }
 
     # ── Reset & obstacle management ──────────────────────────────────────────────
+
+    def set_training_radius(self, radius):
+        """Apply a new goal sampling stage at the next episode reset."""
+        if radius is not None and (not np.isfinite(radius) or radius <= self.cfg['acceptance_radius']):
+            raise ValueError("Training radius must exceed the goal tolerance")
+        self.training_radius = radius
 
     def reset(self, seed=None, options=None):
         # Reset both the physics world and its controller. Otherwise the next
@@ -244,26 +277,49 @@ class UAVNavEnv(BaseRLAviary):
         # Randomize goal and obstacle if not fixed
         rng = self.np_random
 
-        if self._target_pos_fixed is not None:
+        options = options or {}
+        start = self.start_pos
+        self._episode_radius = self.training_radius
+        if 'target_pos' in options:
+            self.target_pos = np.asarray(options['target_pos'], dtype=float).reshape(3).copy()
+        elif self._target_pos_fixed is not None:
             self.target_pos = self._target_pos_fixed.copy()
+        elif self.training_radius is not None:
+            # Uniform directions include goals below the initial altitude.
+            for _ in range(256):
+                direction = rng.normal(size=3)
+                length = rng.uniform(max(self.training_radius * 0.5, self.cfg['acceptance_radius']),
+                                     self.training_radius)
+                self.target_pos = start + length * direction / np.linalg.norm(direction)
+                if 0.3 < self.target_pos[2] < self.cfg['flight_bounds'] and np.all(np.abs(self.target_pos) < self.cfg['flight_bounds']):
+                    break
+            else:
+                raise ValueError("Cannot sample a curriculum goal within the flight volume")
         else:
             # Random goal in flight envelope, at least 2 m from start
-            start = self.INIT_XYZ[0]
-            while True:
-                self.target_pos = rng.uniform(-5, 5, size=3)
-                self.target_pos[2] = rng.uniform(0.5, 3.0)
+            width = min(5.0, self.cfg['flight_bounds'])
+            for _ in range(256):
+                self.target_pos = rng.uniform(-width, width, size=3)
+                self.target_pos[2] = rng.uniform(min(0.5, width), min(3.0, width))
                 if np.linalg.norm(self.target_pos - start) > 2.0:
                     break
+            else:
+                raise ValueError("Cannot sample a goal two metres from the start within the flight volume")
+
+        if (not np.isfinite(self.target_pos).all() or self.target_pos[2] < 0.05
+                or np.any(np.abs(self.target_pos) > self.cfg['flight_bounds'])):
+            raise ValueError("Goal must lie inside the flight volume")
 
         if self._obs_pos_fixed is not None:
             self.obs_pos = self._obs_pos_fixed.copy()
+        elif self.training_radius is not None:
+            self.obs_pos = np.full(3, self.cfg['flight_bounds'] + 2.0)
         else:
             # Place static obstacle roughly between start and goal
-            start = self.INIT_XYZ[0]
             self.obs_pos = start + (self.target_pos - start) * rng.uniform(0.3, 0.7) + rng.uniform(-0.3, 0.3, 3)
             self.obs_pos[2] = max(0.3, self.obs_pos[2])
 
-        self._prev_dist  = float(np.linalg.norm(self.target_pos - self.INIT_XYZ[0]))
+        self._prev_dist  = float(np.linalg.norm(self.target_pos - start))
         self._step_count = 0
         self._t          = 0.0
         self._prev_u     = np.zeros(3)
@@ -299,6 +355,38 @@ class UAVNavEnv(BaseRLAviary):
 
     def get_obs_pos(self) -> np.ndarray:
         return self.obs_pos.copy()
+
+    def predict_positions(self, command, steps):
+        """Free-flight response to a held command in an independent DIRECT world.
+
+        The forecast uses the live pose, velocities and motor controller memory.
+        Obstacle motion is supplied independently by the IMM to the barrier.
+        """
+        if self._forecast_env is None:
+            self._forecast_env = UAVNavEnv(self.cfg, start_pos=self.start_pos)
+        shadow = self._forecast_env
+        state = self._getDroneStateVector(0)
+        body = shadow.DRONE_IDS[0]
+        p.resetBasePositionAndOrientation(body, state[:3], state[3:7], physicsClientId=shadow.CLIENT)
+        p.resetBaseVelocity(body, state[10:13], state[13:16], physicsClientId=shadow.CLIENT)
+        shadow._updateAndStoreKinematicInformation()
+        shadow.ctrl[0] = deepcopy(self.ctrl[0])
+        shadow.last_clipped_action = self.last_clipped_action.copy()
+        shadow.step_counter = self.step_counter
+        shadow._step_count, shadow._t = self._step_count, self._t
+        normalized = (np.asarray(command) / self.cfg['k_ma']).reshape(1, 3).astype(np.float32)
+        positions = np.empty((steps + 1, 3))
+        positions[0] = state[:3]
+        for i in range(1, steps + 1):
+            _, _, _, _, info = shadow.step(normalized)
+            positions[i] = info['pos']
+        return positions
+
+    def close(self):
+        if self._forecast_env is not None:
+            self._forecast_env.close()
+            self._forecast_env = None
+        super().close()
 
     # ── Helpers ──────────────────────────────────────────────────────────────────
 
