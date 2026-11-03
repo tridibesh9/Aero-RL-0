@@ -236,8 +236,13 @@ class UAVNavEnv(BaseRLAviary):
     # ── Reset & obstacle management ──────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
+        # Reset both the physics world and its controller. Otherwise the next
+        # episode starts with motor integral and attitude errors from the last.
+        super().reset(seed=seed, options=options)
+        for motor_controller in self.ctrl:
+            motor_controller.reset()
         # Randomize goal and obstacle if not fixed
-        rng = np.random.default_rng(seed)
+        rng = self.np_random
 
         if self._target_pos_fixed is not None:
             self.target_pos = self._target_pos_fixed.copy()
@@ -263,12 +268,10 @@ class UAVNavEnv(BaseRLAviary):
         self._t          = 0.0
         self._prev_u     = np.zeros(3)
 
-        obs, info = super().reset(seed=seed, options=options)
-
         # Spawn obstacle sphere in PyBullet
         self._spawn_obstacle()
 
-        return obs, info
+        return self._computeObs(), self._computeInfo()
 
     def step(self, action):
         self._step_count += 1
