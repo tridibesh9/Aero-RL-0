@@ -14,6 +14,7 @@ from controllers.hierarchical_ctrl import HierarchicalController, PIDWithACBF
 from envs.UAVNavEnv import UAVNavEnv
 from scenarios import case1_linear, case2_accel, case3_figure8
 from utils.config import load_config, new_run_dir, write_run_manifest
+from utils.policy import check_model_interface, config_for_model
 from utils.logger import (EpisodeLogger, plot_3d_trajectories, plot_min_distance,
                           plot_states, print_summary_table)
 
@@ -22,8 +23,8 @@ SCENARIOS = {1: case1_linear, 2: case2_accel, 3: case3_figure8}
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', default='results/ppo_final.zip')
-    parser.add_argument('--config', default='configs/params.yaml')
+    parser.add_argument('--model', required=True, help='Explicit checkpoint path; old defaults are unsafe')
+    parser.add_argument('--config', help='Defaults to params.yaml beside the checkpoint')
     parser.add_argument('--case', choices=('1', '2', '3', 'all'), default='all')
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--max_steps', type=int)
@@ -54,7 +55,7 @@ def run_episode(env, controller, scenario_mod, label, ds, max_steps, *, ppo=None
         else:
             try:
                 action, _ = controller.act_normalized(info['pos'], info['vel'], goal, info['obs_pos'],
-                                                      predict_positions=env.predict_positions)
+                                                      predict_positions=env.predict_positions, policy_observation=obs)
             except FilterFailure as err:
                 log.stop_reason = 'filter_failure'
                 log.failed_attempt = {k: v for k, v in controller.acbf.diagnostics.items() if k != 'reference'}
@@ -103,15 +104,17 @@ def evaluate_case(case_num, cfg, args, summary, model=None):
 
 def main():
     args = parse_args()
-    cfg = load_config(args.config)
+    config_path = config_for_model(args.model, args.config)
+    cfg = load_config(config_path)
     if args.max_steps is not None and args.max_steps < 1:
         raise ValueError('--max_steps must be positive')
     model = PPO.load(args.model, device='cpu')
+    check_model_interface(model, cfg)
     args.output_dir = new_run_dir(args.output_dir, 'results/evaluations')
     cases = list(SCENARIOS) if args.case == 'all' else [int(args.case)]
     write_run_manifest(args.output_dir, cfg, args.model, cases=cases, seed=args.seed,
                        max_steps=args.max_steps or cfg['max_episode_steps'], model_timesteps=model.num_timesteps,
-                       uav_forecast='PyBullet CF2X waypoint/PID free flight')
+                       uav_forecast='PyBullet CF2X ' + cfg.get('action_mode', 'waypoint_v1'))
     summary = {}
     for case_num in cases:
         evaluate_case(case_num, cfg, args, summary, model)

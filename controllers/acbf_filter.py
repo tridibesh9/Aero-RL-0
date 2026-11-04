@@ -117,10 +117,10 @@ class ACBFFilter:
         raise FilterFailure("No solver returned a finite solution within tolerance: " + ' | '.join(attempts))
 
     def filter(self, u_ref, p_uav, v_uav, obs_traj, v_obs=None, *, predict_positions=None):
-        """Filter a held waypoint command using the supplied plant rollout.
+        """Filter a held command using the supplied plant rollout.
 
         Standalone acceleration-model studies may omit predict_positions. The
-        flight evaluator always supplies the environment's waypoint/PID rollout.
+        flight evaluator supplies the environment's configured actuation rollout.
         """
         ref = np.clip(np.asarray(u_ref, dtype=float).reshape(3), self.u_min, self.u_max)
         obstacles = np.asarray(obs_traj, dtype=float)[:self.N + 1]

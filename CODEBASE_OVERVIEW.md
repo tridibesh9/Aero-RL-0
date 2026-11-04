@@ -6,11 +6,13 @@ The project evaluates one Crazyflie CF2X travelling toward a goal in a PyBullet 
 
 | Controller | Goal guidance | Obstacle handling |
 |---|---|---|
-| Pure RL | Deterministic PPO prediction | The policy observes drone velocity and goal error only |
+| Pure RL | Deterministic PPO prediction | The policy observes the scaled drone/control state; obstacle state is excluded |
 | RL + ACBF | The same PPO checkpoint | IMM prediction followed by the ACBF filter |
 | PID + ACBF | PID applied to position error | The same IMM and ACBF as RL + ACBF |
 
-The environment passes a six-component observation to PPO, with velocity first and goal position minus drone position second. For all three controllers the applied command is bounded by the intersection of the configured actuator limits and the policy range. Each command component moves the PID target relative to the current position. The offset in metres is the command multiplied componentwise by \([0.5,0.5,0.15]\). The motor PID produces four rotor speeds. The CSVs record the applied command and measured position and velocity.
+The default acceleration_v2 interface passes 19 scaled observations to PPO. The groups are velocity, goal error, current RPY, angular velocity, previous attitude-controller RPY, absolute position, and the fraction of the goal hold interval completed. PPO chooses world-frame net acceleration. Gravity is added once in the acceleration-to-thrust conversion, and the attitude/motor loop runs at 240 Hz while PPO updates at 20 Hz. The policy therefore observes the attitude-controller history and the floor/arena position. Historical waypoint_v1 policies use their explicit legacy configuration and six raw observations.
+
+A checkpoint records its action/observation version, physical scales and control settings. Evaluation requires an explicit model and reads the checkpoint's configuration snapshot. Incompatible models are rejected. Both RL modes receive the exact same policy observation from the environment.
 
 Each reset clears the motor controller's integral and attitude history. Random episodes use Gymnasium's seeded generator. Fixed scenarios pass the start, goal, initial obstacle position and obstacle motion into the environment. Mass and gravity come from the CF2X simulator. Control updates occur at 20 Hz and physics updates at 240 Hz with the supplied settings.
 
@@ -20,7 +22,7 @@ The IMM combines constant velocity (6 states), constant acceleration (9 states),
 
 For each of the next five control steps the IMM propagates each model, then averages its predicted position using the current model probabilities. The moving-obstacle benchmark supplies exact simulated position observations. Its filter noise matrices describe the estimator assumptions.
 
-The flight evaluator supplies a separate DIRECT PyBullet world for predicting the drone. A candidate rollout starts at the live position, attitude and velocities with a copy of the motor PID state. It holds the candidate command for the prediction horizon using the same waypoint mapping, rotor controller and physics. The forecast world includes the ground and models free flight relative to the obstacle. The predicted obstacle enters through the IMM. Forecasts are evaluated independently of the live world's clock and state. Standalone point-mass studies can call the filter with the analytical acceleration rollout. Code controlling a UAVNavEnv should pass its predict_positions method to act_normalized, as the evaluator does.
+The flight evaluator supplies a separate DIRECT PyBullet world for predicting the drone. A candidate rollout starts at the live position, attitude and velocities with a copy of the motor PID state. It holds the candidate command for the prediction horizon using the same configured acceleration or legacy waypoint interface, rotor controller and physics. The forecast world includes the ground and models free flight relative to the obstacle. The predicted obstacle enters through the IMM. Forecasts are evaluated independently of the live world's clock and state. Standalone point-mass studies can call the filter with the analytical acceleration rollout. Code controlling a UAVNavEnv should pass its predict_positions method and full policy_observation to act_normalized, as the evaluator does.
 
 ## Adaptive barrier calculation
 
@@ -49,11 +51,13 @@ These conditions apply to sampled, predicted positions subject to numerical tole
 
 ## Goal tracking and model selection
 
-The reward includes goal arrival, reduction in distance to goal, a boundary penalty and a time penalty. Arrival requires distance strictly below 0.10 m. Timeouts occur at 500 control steps by default.
+The default reward includes arrival, distance progress, boundary failure, time cost, and explicit distance and speed costs. Arrival requires distance strictly below 0.10 m and speed at most 0.20 m/s for five consecutive control samples. Failed flights terminate; external time limits truncate. This distinction prevents PPO from bootstrapping future values after a terminal crash.
 
-Future training uses a configurable curriculum. The first two stages sample goals in multiple directions up to 1 m and 2.5 m from the start. They park the obstacle outside the flight volume. The final stage uses the full random goal distribution and a static obstacle near the route. Advancement requires the configured arrival fraction across a full window of completed episodes from the current stage. The default is 80 percent across 20 episodes. The saved historical checkpoint predates this procedure.
+The curriculum begins with 0.2–0.4 m goals and advances through radii 1 m, 2.5 m and the full goal distribution. Navigation training keeps the obstacle distant in all stages. Advancement requires success in at least 80 percent of a 20-episode window. These choices are adaptations to the paper.
 
-The validation suite uses four specified goals with fixed seeds and a distant obstacle. Validation runs deterministic inference. Checkpoints rank first by arrivals, then by lower mean final distance and lower mean elapsed time. The best candidate can have failed missions. A separately labelled validated checkpoint requires success on the entire suite. Training and validation each allocate fresh output directories.
+Validation checks the four specified distant goals and six goals from the current stage. Selection ranks distant-suite arrivals, error and elapsed time; validated_model.zip additionally requires both suites to pass. Three successful validation checks on distinct policy updates can end the configured run early. This establishes only the specified validation gate, not general convergence.
+
+The run saves episode JSONL, per-environment Monitor CSVs, and PPO progress.csv. Initial exploration and PPO updates are more conservative. No learning has yet tested these new settings. See [the change record](TRAINING_FIXES.md) for exact values and non-training checks.
 
 ## Scenarios and metrics
 
@@ -74,15 +78,15 @@ All three current cases start at (0, 0, 1) m and target (5, 0, 2) m. Read each c
 
 | Path | Role |
 |---|---|
-| [Environment](envs/UAVNavEnv.py) | Episode state, goal sampling, waypoint actuation, free-flight prediction |
+| [Environment](envs/UAVNavEnv.py) | Episode state, goal sampling, acceleration/legacy actuation, free-flight prediction |
 | [Training and goal validation](train_ppo.py) | PPO training, curriculum stages and checkpoint selection |
 | [Controller composition](controllers/hierarchical_ctrl.py) | PPO and PID navigation references |
 | [IMM](controllers/imm_predictor.py) | Obstacle motion estimation and short-horizon forecasts |
 | [ACBF](controllers/acbf_filter.py) | Bounded optimization and nonlinear verification |
 | [Evaluation](evaluate.py) and [logger](utils/logger.py) | Matched scenario replays, raw evidence and figures |
 | [Configuration](configs/params.yaml) and [loader](utils/config.py) | Validated settings and run metadata |
-| [Numerical checks](tests/test_navigation.py) | Regression coverage with no policy optimization |
+| [Numerical checks](tests/test_navigation.py) and [learning setup](tests/test_learning_setup.py) | Regression coverage with no policy optimization |
 
-The model at results/ppo_final.zip records 2,015,232 timesteps and eight training environments. The fixed-goal validation record and nine-flight benchmark below were generated using those existing weights. The revised training procedure has yet to produce a new trained model. Use the local run data for reported distances and mission outcomes.
+The model at results/ppo_final.zip records 2,015,232 timesteps and eight training environments. The fixed-goal validation record and nine-flight benchmark below were generated using those existing weights. The 51,200-step waypoint run also failed validation. The current acceleration_v2 procedure has not been trained. Older numerical results apply to their saved configurations only. Use the local run data for reported distances and mission outcomes.
 
 [Goal validation](results/validation/btp_review_20261103/validation.jsonl) · [Benchmark table](results/evaluations/btp_review_20261103/summary_table.txt) · [Diagnostics by flight](results/evaluations/btp_review_20261103/summary.json) · [Original paper](2607004775.pdf)

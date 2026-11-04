@@ -22,6 +22,8 @@ class EpisodeLogger:
             config = load_config(Path(__file__).resolve().parents[1] / 'configs/params.yaml')
         self.collision_distance = config['drone_radius'] + config['obs_radius']
         self.safety_distance = self.collision_distance + config['safety_cushion']
+        self.command_label = ('Commanded acceleration (m/s²)' if config.get('action_mode') == 'acceleration_v2'
+                              else 'Waypoint command')
         self.positions  : list[np.ndarray] = []   # UAV (3,)
         self.velocities : list[np.ndarray] = []
         self.accels     : list[np.ndarray] = []   # control inputs u(k)
@@ -58,6 +60,7 @@ class EpisodeLogger:
                   zip(self.positions, self.step_diagnostics) if d]
         return dict(reached_goal=self.reached_goal, stop_reason=self.stop_reason,
                     goal_error=float(np.linalg.norm(self.positions[-1] - goal)),
+                    goal_speed=float(np.linalg.norm(self.velocities[-1])),
                     mission_t=self.mission_time(), min_dist=self.min_distance(),
                     min_surface_clearance=self.min_distance() - self.collision_distance,
                     collision=self.collision, buffer_violation=self.min_distance() < self.safety_distance,
@@ -180,7 +183,7 @@ def plot_states(log: EpisodeLogger, save_path: str):
 
     fig, axes = plt.subplots(3, 3, figsize=(13, 8))
     for col, (data, ylabel) in enumerate(
-            [(pos, 'Position (m)'), (vel, 'Velocity (m/s)'), (acc, 'Waypoint command')]):
+            [(pos, 'Position (m)'), (vel, 'Velocity (m/s)'), (acc, log.command_label)]):
         for row, lbl in enumerate(axes_labels):
             axes[row, col].plot(t, data[:, row], linewidth=1.2)
             axes[row, col].set_ylabel(f'{lbl} {ylabel}')

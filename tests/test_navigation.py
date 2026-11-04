@@ -25,7 +25,7 @@ from utils.logger import EpisodeLogger
 from utils.math_utils import adaptive_gamma_star, predict_uav_trajectory, safety_fn
 
 
-CFG = load_config(Path(__file__).resolve().parents[1] / "configs/params.yaml")
+CFG = load_config(Path(__file__).resolve().parents[1] / "configs/params_legacy.yaml")
 
 
 class SafetyAndPredictionTests(unittest.TestCase):
@@ -181,8 +181,8 @@ class FlightTests(unittest.TestCase):
         bullet.resetBaseVelocity(e.DRONE_IDS[0], [1,0,0], physicsClientId=e.CLIENT)
         e._updateAndStoreKinematicInformation()
         _, _, terminated, truncated, info = e.step(np.zeros((1,3)))
-        self.assertTrue(truncated)
-        self.assertFalse(terminated)
+        self.assertFalse(truncated)
+        self.assertTrue(terminated)
         self.assertEqual(info['termination_reason'], 'out_of_bounds')
         with contextlib.redirect_stdout(io.StringIO()):
             vec = DummyVecEnv([lambda: Monitor(UAVNavEnv(dict(CFG, max_episode_steps=1)))])

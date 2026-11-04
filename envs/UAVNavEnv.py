@@ -6,10 +6,10 @@ Custom Gymnasium environment for UAV navigation with dynamic obstacle support.
 Architecture
 ────────────
 • Inherits from gym_pybullet_drones BaseRLAviary (ActionType.PID, ObservationType.KIN)
-• Overrides obs space → 6-D  [v(k)ᵀ, e(k)ᵀ]  (Sec. 3.1)
-• Overrides action space → 3-D normalized waypoint command a ∈ [-1,1]³
-• Overrides _preprocessAction → converts command to PID target position
-• Overrides reward → composite r(k) = r_tr + r_ds + r_bp + r_tp  (Eqs. 9-13)
+• acceleration_v2: net acceleration commands with a 240 Hz attitude loop
+• Scaled 19-D state includes velocity, goal error, attitude and controller memory
+• waypoint_v1: explicit compatibility mode for historical six-input policies
+• Paper-inspired reward with optional distance and speed costs
 • Manages a single spherical obstacle (dynamic or static)
 
 Notes
@@ -29,6 +29,7 @@ from gym_pybullet_drones.utils.enums import (
     DroneModel, Physics, ActionType, ObservationType
 )
 from utils.config import command_bounds, validate_config
+from controllers.acceleration_ctrl import acceleration_rpm
 
 
 class UAVNavEnv(BaseRLAviary):
@@ -62,6 +63,7 @@ class UAVNavEnv(BaseRLAviary):
                  start_pos=None):
         validate_config(config)
         self.cfg = config
+        self.action_mode = config.get('action_mode', 'waypoint_v1')
         self.command_min, self.command_max = command_bounds(config)
         self.start_pos = np.asarray(self.INIT_XYZ[0] if start_pos is None else start_pos,
                                     dtype=float).reshape(3).copy()
@@ -84,6 +86,9 @@ class UAVNavEnv(BaseRLAviary):
         self._step_count  : int        = 0
         self._t           : float      = 0.0
         self._prev_u      : np.ndarray = np.zeros(3)
+        self._goal_steps = 0
+        self.reward_components = {}
+        self.reward_totals = {}
 
         ctrl_freq = config['ctrl_freq']
 
@@ -100,6 +105,8 @@ class UAVNavEnv(BaseRLAviary):
             obs=ObservationType.KIN,
             act=ActionType.PID,
         )
+        if self.action_mode == 'acceleration_v2':
+            self.ctrl[0].I_COEFF_TOR[:] = 0.
         for key, value in (("mass", self.M), ("g", self.G)):
             if key in config and not np.isclose(float(config[key]), value):
                 self.close()
@@ -109,17 +116,16 @@ class UAVNavEnv(BaseRLAviary):
 
     def _observationSpace(self):
         """
-        6-D observation:  s(k) = [v(k)ᵀ, e(k)ᵀ]  ∈ ℝ⁶
-
-        v(k) = velocity (3D)
-        e(k) = p*(k) - p(k) = position error (3D)
+        Legacy: [velocity, goal error]. Acceleration v2 adds current RPY,
+        angular velocity, previous controller RPY and absolute position.
         """
-        lo = np.full(6, -np.inf, dtype=np.float32)
-        hi = np.full(6,  np.inf, dtype=np.float32)
+        size = 19 if self.action_mode == 'acceleration_v2' else 6
+        lo = np.full(size, -np.inf, dtype=np.float32)
+        hi = np.full(size,  np.inf, dtype=np.float32)
         return spaces.Box(low=lo, high=hi, dtype=np.float32)
 
     def _actionSpace(self):
-        """3-D normalized waypoint command a ∈ [-1, 1]³."""
+        """Normalized net acceleration (v2), or legacy waypoint command."""
         lo = np.full((1, 3), -1.0, dtype=np.float32)
         hi = np.full((1, 3),  1.0, dtype=np.float32)
         # Initialise action buffer with zeros (required by BaseRLAviary)
@@ -133,18 +139,27 @@ class UAVNavEnv(BaseRLAviary):
     # ── Observation ──────────────────────────────────────────────────────────────
 
     def _computeObs(self):
-        """Return 6-D state [vx,vy,vz, ex,ey,ez]."""
+        """Build the versioned policy observation with fixed physical scales."""
         state = self._getDroneStateVector(0)
         vel   = state[10:13]                        # vx, vy, vz
         pos   = state[0:3]
         err   = self.target_pos - pos               # e(k) = p* - p
+        if self.action_mode == 'acceleration_v2':
+            # Fixed scaling and observed attitude/controller memory avoid a
+            # changing policy interface or a hidden moving-position controller.
+            return np.r_[vel / self.cfg['obs_velocity_scale'],
+                         err / self.cfg['obs_error_scale'], state[7:10] / np.pi,
+                         state[13:16] / self.cfg['obs_angular_scale'],
+                         self.ctrl[0].last_rpy / np.pi,
+                         pos / self.cfg['flight_bounds'],
+                         min(1., self._goal_steps / self.cfg.get('goal_hold_steps', 1))].astype(np.float32)
         return np.array([*vel, *err], dtype=np.float32)
 
     # ── Action preprocessing ─────────────────────────────────────────────────────
 
     def _preprocessAction(self, action):
         """
-        Convert normalized PPO action → PID target position.
+        Legacy interface only: normalized PPO action → PID target position.
 
         a ∈ [-1,1]³ gives a bounded waypoint command u = k_ma * a.
         The waypoint offset in metres is u * [0.5, 0.5, 0.15].
@@ -198,7 +213,10 @@ class UAVNavEnv(BaseRLAviary):
         err   = np.linalg.norm(self.target_pos - pos)
 
         # r_tr: terminal reward (Eq. 10)
-        r_tr = cfg['M_tr'] if err < cfg['acceptance_radius'] else 0.0
+        speed = np.linalg.norm(state[10:13])
+        inside = err < cfg['acceptance_radius'] and speed <= cfg.get('goal_speed_tolerance', np.inf)
+        self._goal_steps = self._goal_steps + 1 if inside else 0
+        r_tr = cfg['M_tr'] if self._is_success(pos) else 0.0
 
         # r_ds: distance-shaping reward (Eq. 11)
         prev_dist = self._prev_dist if np.isfinite(self._prev_dist) else err
@@ -213,23 +231,31 @@ class UAVNavEnv(BaseRLAviary):
         # r_tp: time penalty (Eq. 13)
         r_tp = -cfg['M_tp'] * self.CTRL_TIMESTEP
 
-        return float(r_tr + r_ds + r_bp + r_tp)
+        r_distance = -cfg.get('distance_cost', 0.) * err * self.CTRL_TIMESTEP
+        r_speed = -cfg.get('speed_cost', 0.) * speed**2 * self.CTRL_TIMESTEP
+        self.reward_components = dict(terminal=r_tr, progress=r_ds, boundary=r_bp,
+                                      time=r_tp, distance=r_distance, speed=r_speed)
+        for name, value in self.reward_components.items():
+            self.reward_totals[name] = self.reward_totals.get(name, 0.) + float(value)
+        return float(sum(self.reward_components.values()))
 
     # ── Termination ──────────────────────────────────────────────────────────────
 
     def _computeTerminated(self):
         state = self._getDroneStateVector(0)
         pos   = state[0:3]
-        err   = np.linalg.norm(self.target_pos - pos)
-        return bool(err < self.cfg['acceptance_radius'])
+        return bool(self._is_success(pos) or self._is_failure(pos))
+
+    def _is_failure(self, pos):
+        return bool(np.any(np.abs(pos) > self.cfg['flight_bounds']) or pos[2] < 0.05)
+
+    def _is_success(self, pos):
+        return bool(not self._is_failure(pos)
+                    and self._goal_steps >= self.cfg.get('goal_hold_steps', 1))
 
     def _computeTruncated(self):
-        state = self._getDroneStateVector(0)
-        pos   = state[0:3]
-        bound = self.cfg['flight_bounds']
-        oob   = np.any(np.abs(pos) > bound) or pos[2] < 0.05
         timeout = self._step_count >= self.cfg['max_episode_steps']
-        return bool(oob or timeout)
+        return bool(timeout and not self._computeTerminated())
 
     def _computeInfo(self):
         state   = self._getDroneStateVector(0)
@@ -237,7 +263,7 @@ class UAVNavEnv(BaseRLAviary):
         vel     = state[10:13]
         dist_to_obs = float(np.linalg.norm(pos - self.obs_pos))
         goal_error = float(np.linalg.norm(self.target_pos - pos))
-        reached = goal_error < self.cfg['acceptance_radius']
+        reached = self._is_success(pos)
         if reached:
             reason = "goal"
         elif np.any(np.abs(pos) > self.cfg['flight_bounds']) or pos[2] < 0.05:
@@ -254,6 +280,9 @@ class UAVNavEnv(BaseRLAviary):
             'step':         self._step_count,
             't':            self._t,
             'goal_error':   goal_error,
+            'goal_speed':   float(np.linalg.norm(vel)),
+            'reward_components': self.reward_components.copy(),
+            'reward_totals': self.reward_totals.copy(),
             'is_success':   reached,
             'termination_reason': reason,
             'command':      self._prev_u.copy(),
@@ -312,7 +341,7 @@ class UAVNavEnv(BaseRLAviary):
 
         if self._obs_pos_fixed is not None:
             self.obs_pos = self._obs_pos_fixed.copy()
-        elif self.training_radius is not None:
+        elif self.training_radius is not None or self.cfg.get('training_obstacle', 'static') == 'distant':
             self.obs_pos = np.full(3, self.cfg['flight_bounds'] + 2.0)
         else:
             # Place static obstacle roughly between start and goal
@@ -323,6 +352,9 @@ class UAVNavEnv(BaseRLAviary):
         self._step_count = 0
         self._t          = 0.0
         self._prev_u     = np.zeros(3)
+        self._goal_steps = 0
+        self.reward_components = {}
+        self.reward_totals = {}
 
         # Spawn obstacle sphere in PyBullet
         self._spawn_obstacle()
@@ -344,7 +376,25 @@ class UAVNavEnv(BaseRLAviary):
                     physicsClientId=self.CLIENT
                 )
 
-        return super().step(action)
+        if self.action_mode == 'waypoint_v1':
+            return super().step(action)
+        action = np.asarray(action, dtype=float)
+        if action.shape != (1, 3) or not np.isfinite(action).all():
+            raise ValueError('Action must be a finite (1, 3) array')
+        self._prev_u = np.clip(self.cfg['k_ma'] * action[0], self.command_min, self.command_max)
+        self.action_buffer.append(action.copy())
+        for _ in range(self.PYB_STEPS_PER_CTRL):
+            self._updateAndStoreKinematicInformation()
+            state = self._getDroneStateVector(0)
+            rpm = acceleration_rpm(self.ctrl[0], self._prev_u, state[3:7],
+                                   self.M, self.G, self.PYB_TIMESTEP)
+            self._physics(rpm, 0)
+            p.stepSimulation(physicsClientId=self.CLIENT)
+            self.last_clipped_action = rpm.reshape(1, 4)
+        self.step_counter += self.PYB_STEPS_PER_CTRL
+        self._updateAndStoreKinematicInformation()
+        reward = self._computeReward()
+        return self._computeObs(), reward, self._computeTerminated(), self._computeTruncated(), self._computeInfo()
 
     # ── Accessors for hierarchical controller ────────────────────────────────────
 
@@ -359,7 +409,7 @@ class UAVNavEnv(BaseRLAviary):
     def predict_positions(self, command, steps):
         """Free-flight response to a held command in an independent DIRECT world.
 
-        The forecast uses the live pose, velocities and motor controller memory.
+        The forecast uses the live pose, velocities and attitude controller memory.
         Obstacle motion is supplied independently by the IMM to the barrier.
         """
         if self._forecast_env is None:

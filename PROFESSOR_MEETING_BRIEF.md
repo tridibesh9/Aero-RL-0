@@ -1,3 +1,5 @@
+> 4 November update: the acceleration-based learning setup has been revised without training. Historical results below describe the older waypoint policies. See [TRAINING_FIXES.md](TRAINING_FIXES.md) for the new implementation and its limits.
+
 # BTP professor meeting brief
 
 Updated 3 November 2026 after the corrected benchmark replay.

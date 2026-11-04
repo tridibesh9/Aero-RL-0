@@ -1,30 +1,48 @@
-# Aero-RL · UAV navigation in simulation
+# UAV navigation with PPO, IMM and ACBF
 
-This project compares a PPO policy, PPO with an adaptive control barrier function (ACBF), and PID with the same ACBF. Each drone must reach a goal while a spherical obstacle moves on a straight, accelerating, or figure-eight path. The controller architecture follows [Gao and Sun (2026)](https://doi.org/10.53941/am.2026.100003). The implementation and experiments used here are described in the [technical guide](CODEBASE_OVERVIEW.md).
+The current configuration uses a new acceleration interface intended to address the failed goal tracking of the historical waypoint policies. **No new policy has been trained or demonstrated to converge with this interface.** The physics and learning contracts have been checked without learning. Read [the changes and verification record](TRAINING_FIXES.md).
 
-## Evaluate an existing checkpoint
+PPO supplies navigation commands. The same checkpoint can be evaluated alone or with the IMM/ACBF safety filter. A separate PID reference is a control baseline. The project follows the architecture of [Gao and Sun (2026)](https://doi.org/10.53941/am.2026.100003), with the documented adaptations in [the technical guide](CODEBASE_OVERVIEW.md).
 
-Run these commands from the project directory with the project's Python environment.
+## Training later
+
+Run from this directory using the project Python environment. The following starts training only when you choose to run it.
 
 ```powershell
-python evaluate.py --model results/ppo_final.zip --case all
-python train_ppo.py --validate-only results/ppo_final.zip
+python -B train_ppo.py --timesteps 200000 --n_envs 1 --seed 42
 ```
 
-The first command runs the three moving-obstacle cases. The second checks four fixed navigation goals with the obstacle parked outside the flight volume. Both use deterministic inference. Each invocation creates a new run directory under `results/evaluations` or `results/validation`. Use `--output-dir` to supply a new destination.
+This is a budget, not a convergence guarantee. New runs use configs/params.yaml, fresh weights, and fresh dated directories under results/training. Do not resume an old six-input waypoint model with the new 19-input acceleration environment.
 
-Each benchmark run contains a model and source fingerprint, a configuration snapshot, a text and JSON summary, per-step CSVs, and plots. Read goal completion and stop reason alongside centre-to-centre distance. With the default settings, the geometric collision threshold is 0.40 m and the safety buffer begins below 0.50 m.
+Training begins with goals 0.2–0.4 m away. The curriculum advances through radii 1 m, 2.5 m, and the full goal distribution. Navigation training keeps obstacles distant. The same PPO is later tested with the safety filter around moving obstacles. Goal success requires distance below 0.1 m and speed at most 0.2 m/s for five consecutive control steps.
 
-The reviewed final checkpoint records 2,015,232 prior training steps. On the four-goal validation suite it reached 0/4 goals. Use the [checked benchmark summary](results/evaluations/btp_review_20261103/summary_table.txt) and [goal validation record](results/validation/btp_review_20261103/validation.jsonl) for the local November 2026 experiments. Model archives and generated runs are stored outside version control.
+Read validation.jsonl, episodes.jsonl, env_0.monitor.csv and progress.csv in the run directory. A higher return alone is insufficient. best_candidate.zip can still fail. validated_model.zip is created only when the fixed goal suite and the current-stage suite both pass. This is a validation gate, not proof of general convergence.
 
-## Training entry point
+## Evaluation
 
-A future training run can be started with `python train_ppo.py --timesteps 1000000 --seed 42 --n_envs 4`. It creates a separate directory under `results/training`. Training starts with nearby goals and progresses to the full static-obstacle task. Checkpoint selection uses validation arrivals, final error, and elapsed time. A `validated_model.zip` requires arrivals at every validation goal. Its scope is goal tracking on that suite.
+Specify the exact checkpoint. The examples below are paths to replace with your actual new run.
 
-## Verification
+```powershell
+python -B train_ppo.py --validate-only results/training/YOUR_RUN/validated_model.zip
+python -B evaluate.py --model results/training/YOUR_RUN/validated_model.zip --case all
+```
+
+Evaluation uses the params.yaml saved with that checkpoint and checks its interface metadata. Results go into a new directory under results/evaluations. The manifests record exact model hashes, source hashes and effective parameters.
+
+To inspect the old waypoint policy, select its explicit legacy configuration.
+
+```powershell
+python -B evaluate.py --model results/ppo_final.zip --config configs/params_legacy.yaml --case all
+```
+
+Historical results are preserved. The previous 2,015,232-step policy and the later 51,200-step waypoint policy failed goal validation. They do not measure the new acceleration implementation.
+
+## Code-only verification
 
 ```powershell
 python -B -m unittest discover -s tests -v
 ```
 
-The regression suite covers the motion forecasts, barrier equations, failure handling, episode resets, metrics, and checkpoint selection. Runtime dependencies include NumPy, PyYAML, PyTorch, Stable-Baselines3, Gymnasium, PyBullet, gym-pybullet-drones, CVXPY with Clarabel and SCS, and Matplotlib. Exact package versions are recorded in each run manifest.
+Tests cover physics calibration, crash versus timeout handling, stopping and holding at a goal, observation consistency, checkpoint compatibility, forecasts, barrier constraints and model selection. The new learning-setup tests forbid PPO learning and Adam optimizer updates.
+
+Dependencies include NumPy, SciPy, PyYAML, PyTorch, Stable-Baselines3, Gymnasium, PyBullet, gym-pybullet-drones, CVXPY with Clarabel/SCS, and Matplotlib. Each run records installed versions. The numerical safety filter can exceed a 50 ms computation budget during intervention, so these checks do not establish real-time deployment performance.

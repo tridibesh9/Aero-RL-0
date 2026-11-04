@@ -21,6 +21,22 @@ def command_bounds(cfg):
 
 
 def validate_config(cfg):
+    mode = cfg.get('action_mode', 'waypoint_v1')
+    if mode not in ('waypoint_v1', 'acceleration_v2'):
+        raise ValueError('Unknown action_mode')
+    if mode == 'acceleration_v2':
+        for name in ('obs_velocity_scale', 'obs_error_scale', 'obs_angular_scale'):
+            if not np.isfinite(cfg[name]) or cfg[name] <= 0:
+                raise ValueError(f'{name} must be finite and positive')
+        if cfg['k_ma'] >= 9.8:
+            raise ValueError('Acceleration scale must leave positive vertical thrust')
+    if (cfg.get('goal_hold_steps', 1) < 1 or not isinstance(cfg.get('goal_hold_steps', 1), int)
+            or not np.isfinite(cfg.get('goal_speed_tolerance', 1.))
+            or cfg.get('goal_speed_tolerance', 1.) <= 0):
+        raise ValueError('Invalid arrival speed or hold time')
+    for name in ('distance_cost', 'speed_cost'):
+        if not np.isfinite(cfg.get(name, 0.)) or cfg.get(name, 0.) < 0:
+            raise ValueError(f'{name} must be finite and nonnegative')
     hz, physics_hz = cfg["ctrl_freq"], cfg["pyb_freq"]
     if not isinstance(hz, int) or not isinstance(physics_hz, int) or hz < 1 or physics_hz < hz or physics_hz % hz:
         raise ValueError("pyb_freq must be a positive integer multiple of ctrl_freq")
@@ -79,7 +95,7 @@ def write_run_manifest(directory, cfg, model_path=None, **details):
         details["model"] = str(Path(model_path).resolve())
         details["model_sha256"] = hashlib.sha256(Path(model_path).read_bytes()).hexdigest()
     details['versions'] = {'python': platform.python_version()}
-    for package in ('numpy', 'torch', 'gymnasium', 'stable-baselines3', 'pybullet',
+    for package in ('numpy', 'scipy', 'torch', 'gymnasium', 'stable-baselines3', 'pybullet',
                     'gym-pybullet-drones', 'cvxpy', 'clarabel', 'scs', 'matplotlib', 'pyyaml'):
         try:
             details['versions'][package] = metadata.version(package)
