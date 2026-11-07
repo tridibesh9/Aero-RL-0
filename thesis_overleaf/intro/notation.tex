@@ -1,0 +1,21 @@
+\chapter*{Abbreviations and Notation}\addcontentsline{toc}{chapter}{Abbreviations and Notation}
+\begin{tabularx}{\textwidth}{lY}
+\toprule Symbol / abbreviation & Meaning\\\midrule
+UAV & Unmanned aerial vehicle\\
+RL / PPO & Reinforcement learning / proximal policy optimization\\
+IMM & Interacting multiple model estimator\\
+CV / CA / CT & Constant-velocity / constant-acceleration / coordinated-turn model\\
+CBF / ACBF & Control barrier function / adaptive control barrier function\\
+PID & Proportional--integral--derivative controller\\
+$p,v$ & UAV position and velocity in the inertial frame\\
+$p_g,p_o$ & Goal position and obstacle centre position\\
+$u_{\rm ref},u$ & Nominal and filtered net-acceleration commands\\
+$\Delta t,N$ & Control interval and prediction horizon\\
+$d,d_c,d_s$ & Centre separation, collision threshold and safety boundary\\
+$e$ & Euclidean position error to the goal\\
+$h_i,\psi_i$ & Predicted barrier value and first-order discrete barrier difference\\
+$\gamma$ & Adaptive barrier coefficient; distinct from PPO's discount factor\\
+$\beta$ & PPO reward-discount factor, denoted \texttt{ppo\_gamma} in code\\
+$\xi,\delta$ & Nonnegative higher-order and coefficient-update relaxation variables\\
+\bottomrule
+\end{tabularx}

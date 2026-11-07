@@ -1,0 +1,18 @@
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {3.1}{\ignorespaces Implemented hierarchy. The safety layer is used during evaluation; PPO training uses goal-navigation episodes with a distant obstacle.\relax }}{6}{figure.caption.8}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {5.1}{\ignorespaces Validation history for the reported eight-environment run. The dashed vertical line marks 507,904 transitions, the end of the earlier same-seed run. Current-stage goals change on curriculum promotion. The repeated end-of-training validation is counted only once in this plot.\relax }}{15}{figure.caption.12}%
+\contentsline {figure}{\numberline {5.2}{\ignorespaces Observed success on the same additional goal set for the two checkpoints. No out-of-bounds event occurred in these tests.\relax }}{16}{figure.caption.14}%
+\contentsline {figure}{\numberline {5.3}{\ignorespaces Selected-checkpoint comparison. In the right panel the dashed line is the 0.50\nobreakspace {}m safety boundary and the dotted line is the 0.40\nobreakspace {}m collision threshold.\relax }}{17}{figure.caption.16}%
+\contentsline {figure}{\numberline {5.4}{\ignorespaces Goal-error histories for the selected checkpoint. The dotted horizontal line is the 0.10\nobreakspace {}m position tolerance; arrival additionally requires the speed and hold-time conditions.\relax }}{18}{figure.caption.17}%
+\contentsline {figure}{\numberline {5.5}{\ignorespaces Case 1 trajectories for the selected checkpoint. A spatial trajectory plot does not by itself establish time-aligned obstacle clearance; that is measured from the logged states.\relax }}{18}{figure.caption.18}%
+\contentsline {figure}{\numberline {5.6}{\ignorespaces Case 2 trajectories for the selected checkpoint. Both RL variants arrive, while the filtered path maintains a larger sampled minimum separation.\relax }}{19}{figure.caption.19}%
+\contentsline {figure}{\numberline {5.7}{\ignorespaces Case 3 trajectories for the selected checkpoint. PPO+ACBF and PID+ACBF use the same obstacle predictor and filter but different nominal commands.\relax }}{20}{figure.caption.20}%
+\contentsline {figure}{\numberline {5.8}{\ignorespaces Time-aligned centre separation in case 3. Pure RL enters the buffer; the filtered methods remain above it in these flights. Distance after a method's arrival is not evaluated because its episode has ended.\relax }}{20}{figure.caption.21}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {A.1}{\ignorespaces Supplementary case 1 separation history for the selected checkpoint.\relax }}{29}{figure.caption.25}%
+\contentsline {figure}{\numberline {A.2}{\ignorespaces Supplementary case 2 separation history for the selected checkpoint.\relax }}{30}{figure.caption.26}%

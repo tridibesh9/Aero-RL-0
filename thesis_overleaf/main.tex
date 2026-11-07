@@ -1,0 +1,60 @@
+%%%%%%%%%%%% MAIN PACKAGES %%%%%%%%%%%%
+\documentclass{template}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx,parskip,appendix,float}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{url,amsmath,amssymb,booktabs,tabularx,longtable,array}
+\usepackage{listings,caption,csquotes,microtype}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage{placeins}
+\ifdefined\LocalBuild
+  \usepackage[style=authoryear,giveninits=true,uniquename=init,backend=bibtex,maxcitenames=2,maxbibnames=10]{biblatex}
+\else
+  \usepackage[style=authoryear,giveninits=true,uniquename=init,backend=biber,maxcitenames=2,maxbibnames=10]{biblatex}
+\fi
+\addbibresource{thesis.bib}
+\AtBeginBibliography{\raggedright}
+\usepackage[pagebackref=false,pdffitwindow=true]{hyperref}
+\input{metadata}
+\hypersetup{pdftitle={\ReportTitle},pdfauthor={\AuthorName},
+ pdfsubject={UAV navigation, reinforcement learning and safety filtering},
+ colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+\graphicspath{{figures/}}
+\DeclareGraphicsExtensions{.pdf,.png,.jpg}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\emergencystretch}{2em}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+\newcommand{\selectedsteps}{630,000}
+\newcommand{\finalsteps}{670,000}
+\lstset{language=Python,basicstyle=\ttfamily\small,breaklines=true,
+ frame=single,numbers=left,numberstyle=\tiny,showstringspaces=false,
+ captionpos=b,columns=fullflexible}
+\begin{document}
+\hypersetup{pageanchor=false}
+\maketitle
+\pagenumbering{roman}
+\hypersetup{pageanchor=true}
+\include{intro/certificate}
+\include{intro/abstract}
+\tableofcontents
+\listoffigures
+\listoftables
+\listofalgorithms
+\include{intro/notation}
+\clearpage\pagenumbering{arabic}
+\include{intro/introduction}
+\include{background/background}
+\include{design/design}
+\include{impl/implementation}
+\include{eval/evaluation}
+\include{conclude/conclude}
+\printbibliography[heading=bibintoc,title={References}]
+\appendix
+\include{appendix/appendix}
+\end{document}

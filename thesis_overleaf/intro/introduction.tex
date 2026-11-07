@@ -1,0 +1,23 @@
+\chapter{Introduction}\label{ch:introduction}
+\section{Motivation}
+Drone navigation in a dynamic environment involves two related requirements: moving toward the destination and preserving separation from obstacles. A controller can satisfy one requirement while failing the other. For example, remaining stationary may avoid an obstacle but fail the mission, while a fast direct trajectory may reach the goal after passing too close to another object. An evaluation should therefore measure arrival, final tracking error, obstacle separation and computational cost together.
+
+Learning-based navigation is attractive because the mapping from state to control can be improved through interaction with a simulator. However, the resulting policy is not automatically a reliable obstacle-avoidance controller. In this project, PPO learns goal-directed motion, while an explicit lower layer uses predicted obstacle motion to modify commands. The design follows the hierarchical idea of \textcite{gao2026}, with implementation adaptations documented throughout this report.
+
+\section{Problem statement}
+The simulated system consists of one quadrotor and one moving spherical obstacle. The drone starts from a prescribed position and must enter a goal neighborhood within a finite episode. The nominal policy outputs bounded three-dimensional acceleration commands. The safety layer receives the drone state and an estimate of the obstacle trajectory, and attempts to preserve a prescribed separation while remaining close to the nominal command.
+
+The central research question is: \emph{Can a prediction-based adaptive safety filter improve measured obstacle separation while retaining the goal-reaching behavior of a learned navigation policy?} A second question concerns the cost of that filter in mission time, path length and computation. A third concerns the relationship between successful benchmark trajectories and generalization to other destinations.
+
+\section{Objectives and scope}
+The project has four objectives. First, it establishes a consistent interface between PPO, the drone dynamics and the safety filter. Second, it implements obstacle-state estimation and finite-horizon filtering. Third, it compares pure RL, RL with ACBF, and a classical controller with the same ACBF layer. Finally, it evaluates learning progress and investigates failures rather than treating every saved model as converged.
+
+The scope is a simulation study with one drone, one obstacle, prescribed obstacle trajectories and exact simulated obstacle-position measurements. The estimator still uses process and measurement covariance assumptions, but a realistic noisy sensing pipeline is not evaluated. Multi-drone coordination, multiple simultaneous obstacles, wind disturbances and physical flight tests are outside the demonstrated scope.
+
+\section{Project contribution}
+The contribution is an implementation and empirical evaluation of a paper-inspired control architecture. It includes a versioned policy interface, consistent plant forecasts, a curriculum-based training procedure, recorded success and safety diagnostics, and checkpoint comparisons that expose residual position bias. It is not a claim of a new PPO algorithm or a new formal barrier-function theorem.
+
+The evidence is deliberately separated into three levels. The training logs show whether the configured validation objective is reached. Additional goal tests examine behavior beyond the callback's fixed goal set. Moving-obstacle tests examine the interaction between navigation and filtering. A strong result at one level is not treated as proof at the other levels.
+
+\section{Organization of the report}
+Chapter~\ref{ch:background} introduces the relevant learning and control concepts. Chapter~\ref{ch:design} formulates the implemented navigation and filtering problem. Chapter~\ref{ch:implementation} describes the software, training and evaluation procedures. Chapter~\ref{ch:evaluation} reports the measured results and limitations. Chapter~\ref{ch:conclusion} presents conclusions and future work. Appendix~\ref{app:repro} records provenance, reproduction commands and the figure inventory.

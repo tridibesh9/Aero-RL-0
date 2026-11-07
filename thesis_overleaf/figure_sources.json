@@ -1,0 +1,61 @@
+[
+  {
+    "figure": "case1_trajectory.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case1\\3d_traj.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "294dfad648fe46d2a2a4247f2a891bc719a66bfa15f6f74e1fea420a98c495a0"
+  },
+  {
+    "figure": "case1_separation.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case1\\min_dist.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "5ff6c1d73823cf0d951169e835a889d81ec135f543a01d69034f2180bd538331"
+  },
+  {
+    "figure": "case2_trajectory.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case2\\3d_traj.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "9eb5a1febc3e504aff6573d671bec20eab9ba22ad3eeb9a0769021da6f74f9ee"
+  },
+  {
+    "figure": "case2_separation.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case2\\min_dist.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "0cd731d01e222a6ce13945e7cb1cbfad737e3c1009b490c02a0bf42986b5a487"
+  },
+  {
+    "figure": "case3_trajectory.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case3\\3d_traj.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "25043effe02ed07433f4571b4608137d0f6d73d2478f40d0227dcad0f99080db"
+  },
+  {
+    "figure": "case3_separation.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\best_candidate\\scenarios\\case3\\min_dist.png",
+    "checkpoint": "validated_model.zip at 630000",
+    "sha256": "6a29ffb48cfa79cb14065d915d31a334038899b180c055ebdfcea3d5b42bb470"
+  },
+  {
+    "figure": "learning_progress.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z\\learning_progress.png",
+    "checkpoint": "training history to 670000"
+  },
+  {
+    "figure": "selected_comparison.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z",
+    "checkpoint": "630000 unless explicitly labelled final 670000",
+    "generated_from": "archived JSON/CSV; no new simulation"
+  },
+  {
+    "figure": "selected_goal_errors.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z",
+    "checkpoint": "630000 unless explicitly labelled final 670000",
+    "generated_from": "archived JSON/CSV; no new simulation"
+  },
+  {
+    "figure": "goal_generalization.png",
+    "source": "results\\evaluations\\20261105T081629_168420Z",
+    "checkpoint": "630000 unless explicitly labelled final 670000",
+    "generated_from": "archived JSON/CSV; no new simulation"
+  }
+]

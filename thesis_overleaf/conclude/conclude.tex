@@ -1,0 +1,20 @@
+\chapter{Conclusions and Future Work}\label{ch:conclusion}
+\section{Conclusions}
+This project implemented a hierarchical UAV navigation controller that combines PPO reference commands, IMM obstacle prediction and an adaptive barrier-based safety filter. The implementation was evaluated against pure PPO and a classical PID-based controller using the same simulated plant and arrival conditions. Configuration snapshots, checkpoint hashes and per-step logs were used to make the comparisons traceable.
+
+The latest run stopped at 670,000 transitions after repeatedly passing its fixed validation criteria. The selected checkpoint at 630,000 transitions and the final checkpoint each reached 59 of 60 additional goals. One distant target retained a small steady position error beyond the 0.10~m radius. Thus the configured validation objective was achieved, but arbitrary-goal reliability was not established.
+
+All three controllers reached the common destination in the linear, accelerating and figure-eight obstacle scenarios. For the selected checkpoint, the figure-eight pure-RL path entered the safety buffer with a minimum centre separation of 0.464~m. PPO+ACBF maintained 0.770~m and reached the goal in 13.60~s. This is a concrete observed benefit of the complete filtering layer. It is not a claim that a physical collision was prevented, because the unfiltered trajectory did not cross the configured collision threshold.
+
+The PID-based baseline remained more efficient, reaching the scenario goal in approximately 7.6--7.85~s. The contribution is therefore a successful implementation, comparison and diagnosis of a hierarchical learning-and-filtering approach, rather than demonstrated superiority over classical control. Earlier failures and current timing limitations show why numerical prediction-based safety must be assessed beyond a favorable trajectory plot.
+
+\section{Future work}
+\textbf{Navigation generalization.} Repeat training with independent seeds and evaluate on new goals and starting states. Maintain close-to-goal tasks at varied locations after curriculum promotion to test and reduce location-dependent position bias. Use separate model-selection and final-evaluation sets.
+
+\textbf{Prediction robustness and feasibility.} Introduce controlled sensor noise, obstacle acceleration changes and model mismatch. Evaluate margins that account for prediction uncertainty. Develop and test a feasible backup control strategy, since terminating an evaluation on solver failure is not an emergency behavior for a real drone.
+
+\textbf{Component ablations.} Compare adaptive and fixed barrier coefficients, single-model and IMM predictions, and alternative nominal controllers under the same conditions. This would distinguish the contribution of individual components from the effect of the complete hierarchy.
+
+\textbf{Computational validation.} Measure timing in isolated runs and profile the repeated simulator forecasts and optimization. Demonstrate deadline compliance before considering hardware deployment. Hardware-in-the-loop and physical tests should follow only after the simulation assumptions and recovery behavior are made explicit.
+
+\textbf{Broader scenarios.} Extend the setting to multiple obstacles, varying goal locations and disturbances. Report both mission completion and safety events, retaining failures rather than relaxing criteria after observing results. These steps would turn the current successful demonstrations into stronger evidence of repeatable navigation performance.

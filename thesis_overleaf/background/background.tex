@@ -1,0 +1,30 @@
+\chapter{Background and Related Work}\label{ch:background}
+\section{Reinforcement learning and PPO}
+A policy maps observations to actions, and training adjusts the policy to improve expected return. Let $o_t$ denote an observation, $a_t$ an action and $r_t$ a reward. With discount factor $\beta$, the return is $G_t=\sum_{j=0}^{\infty}\beta^j r_{t+j}$. A higher return is useful only insofar as the reward and evaluation criteria reflect the intended task.
+
+PPO limits policy changes using a clipped probability-ratio objective \parencite{schulman2017}. Writing $\rho_t(\theta)=\pi_\theta(a_t\mid o_t)/\pi_{\theta_{\rm old}}(a_t\mid o_t)$ and $\hat A_t$ for an estimated advantage, the policy objective is
+\begin{equation}
+L^{\rm clip}(\theta)=\mathbb{E}_t\!\left[\min\!\left(\rho_t(\theta)\hat A_t,
+\operatorname{clip}(\rho_t(\theta),1-\epsilon,1+\epsilon)\hat A_t\right)\right].
+\end{equation}
+The present implementation uses Stable-Baselines3 rather than a new implementation of PPO \parencite{raffin2021}. Training samples stochastic actions; the reported policy evaluations use deterministic actions. Consequently, success over a training episode window and success of the final deterministic policy are related but different measurements.
+
+\section{Safety filtering}
+A safety filter modifies a nominal control command using constraints derived from the system state. The nominal controller retains responsibility for task progress. Barrier-function methods provide a mathematical language for describing a safe set and restricting control inputs to maintain it under appropriate assumptions \parencite{ames2017}. Those assumptions include the dynamics, available control authority and feasibility of the constraints.
+
+In a numerical implementation, finite sampling, state-estimation error and approximate optimization must also be considered. Therefore a barrier-inspired controller operating successfully in a few simulations is not itself a proof of forward invariance. This report uses measured geometric separation to assess the local implementation and explicitly records cases where prediction or feasibility limits have appeared.
+
+\section{Obstacle prediction with multiple models}
+One motion model may not describe every phase of an obstacle trajectory. A constant-velocity model is suitable for straight motion, a constant-acceleration model represents changes in speed, and a coordinated-turn model represents changing heading. The local IMM predictor combines these alternatives by mixing their state estimates, performing model-specific updates, updating model probabilities and fusing the resulting predictions. This is the predictor structure adopted from the source architecture \parencite{gao2026}.
+
+The combination is useful for a finite prediction horizon, but its output remains an estimate. A small error matters when a predicted trajectory passes close to the safety boundary. The study therefore distinguishes predicted separation from the separation measured after the simulator executes the command.
+
+\section{Simulation platform and classical baseline}
+The \texttt{gym-pybullet-drones} environment provides quadrotor simulation and control components suitable for learning experiments \parencite{panerati2021}. This project builds a custom navigation environment around its Crazyflie model. The actual control command is converted to rotor inputs using an inner attitude controller; the vehicle is not advanced solely by an ideal point-mass equation.
+
+A position-error controller provides a classical comparison. It is labelled PID+ACBF to retain the repository terminology, although the evaluated position gains set the integral term to zero. Thus its outer navigation law is effectively proportional--derivative control. All three methods share the same simulated plant and stopping criterion.
+
+\section{Relationship to the source paper}
+\textcite{gao2026} motivates the combination of learned reference commands, IMM prediction and adaptive barrier filtering. The present work evaluates that structural idea, not an exact reproduction of every reported paper experiment. The local policy has expanded observations, net-acceleration semantics, an explicit curriculum and additional reward terms. A single PPO checkpoint is used in both RL variants across all three obstacle cases. These choices make the effect of adding the filter observable for a fixed policy, but do not reproduce comparisons involving separately trained case-specific policies.
+
+No numerical superiority claim is transferred from the source paper to this implementation. In particular, the local PID baseline remains faster, and the observed safety benefit is reported using explicit centre-distance thresholds. Claims about universal safety, adaptation benefits relative to a fixed CBF, or the independent contribution of IMM require further analysis and experiments.

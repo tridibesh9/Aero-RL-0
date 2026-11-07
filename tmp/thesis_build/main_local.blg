@@ -1,0 +1,17 @@
+This is BibTeX, Version 0.99d
+Capacity: max_strings=35307, hash_size=35307, hash_prime=30011
+The top-level auxiliary file: main_local.aux
+The style file: biblatex.bst
+A level-1 auxiliary file: intro/certificate.aux
+A level-1 auxiliary file: intro/abstract.aux
+A level-1 auxiliary file: intro/notation.aux
+A level-1 auxiliary file: intro/introduction.aux
+A level-1 auxiliary file: background/background.aux
+A level-1 auxiliary file: design/design.aux
+A level-1 auxiliary file: impl/implementation.aux
+A level-1 auxiliary file: eval/evaluation.aux
+A level-1 auxiliary file: conclude/conclude.aux
+A level-1 auxiliary file: appendix/appendix.aux
+Database file #1: main_local-blx.bib
+Database file #2: thesis.bib
+Biblatex version: 3.17

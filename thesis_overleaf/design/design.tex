@@ -1,0 +1,113 @@
+\chapter{System Design and Mathematical Formulation}\label{ch:design}
+\section{Hierarchical architecture}
+Figure~\ref{fig:architecture} shows the implemented information flow. PPO proposes a nominal command from the drone observation. The IMM processes obstacle positions independently of PPO. The ACBF layer combines the predicted obstacle trajectory with candidate drone trajectories to select a bounded command. The inner controller converts that command into rotor inputs. In the pure-RL comparison, the nominal command bypasses the IMM/ACBF layer; the observation and PPO weights are unchanged.
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[font=\small,box/.style={draw,rounded corners,align=center,minimum width=32mm,minimum height=12mm},arr/.style={-{Latex},thick},node distance=10mm and 10mm]
+\node[box] (state) {Drone state\\and goal};
+\node[box,right=of state] (ppo) {PPO policy};
+\node[box,right=of ppo] (filter) {ACBF filter};
+\node[box,below=of state] (obs) {Obstacle\\positions};
+\node[box,right=of obs] (imm) {IMM predictor};
+\node[box,below=of filter] (plant) {Attitude loop\\and PyBullet};
+\draw[arr] (state)--(ppo);\draw[arr] (ppo)--node[above]{$u_{\rm ref}$}(filter);
+\draw[arr] (obs)--(imm);\draw[arr] (imm.north)--++(0,5mm)-|(filter.south west);
+\draw[arr] (state.north)--++(0,7mm)-|node[pos=.25,above]{drone state}(filter.north);
+\draw[arr] (filter)--node[right]{$u$}(plant);
+\draw[arr] (plant.south)--++(0,-7mm)-|node[pos=.25,below]{state feedback}([xshift=-6mm]state.west)--(state.west);
+\end{tikzpicture}
+\caption{Implemented hierarchy. The safety layer is used during evaluation; PPO training uses goal-navigation episodes with a distant obstacle.}\label{fig:architecture}
+\end{figure}
+
+\section{State, observation and action}
+Let $p,v\in\R^3$ denote inertial position and velocity, and let $p_g$ denote the target. The position error is $p_g-p$. A conceptual translational model is
+\begin{equation}
+\dot p=v,\qquad \dot v=-g e_3+\frac{T}{m}R e_3,
+\end{equation}
+where $R$ maps body-frame vectors to the inertial frame and $T$ is total rotor thrust. The actual simulator includes rotational dynamics and the inner controller; this equation is not a replacement for the simulated plant.
+
+The normalized policy action $a\in[-1,1]^3$ is mapped to net acceleration $u=k_{ma}a$, subject to the effective command bounds. Here $k_{ma}=1$, giving an effective per-axis range of $[-1,1]$~m/s$^2$. Although the configuration also contains nominal bounds of $[-3,3]$, the implementation intersects them with the normalized action range. The desired force is $m(u+g e_3)$, so gravity is added once. A zero net-acceleration command corresponds to a level hover in the ideal stationary case.
+
+The 19-dimensional observation is
+\begin{equation}
+o=\left[\frac{v}{2},\ \frac{p_g-p}{5},\ \frac{\eta}{\pi},\
+\frac{\omega}{10},\ \frac{\eta_{\rm prev}}{\pi},\ \frac{p}{10},\ f_h\right],
+\end{equation}
+where $\eta$ is roll--pitch--yaw, $\omega$ is angular velocity, $\eta_{\rm prev}$ is stored inner-controller attitude history and $f_h$ is the fraction of the required goal-hold interval completed. The fixed scales are part of the checkpoint interface. Obstacle position is not included. Absolute position provides information relevant to flight bounds, but also allows location-dependent policies; its effect is revisited in the evaluation.
+
+\section{Navigation reward and stopping criterion}
+Let $e_t=\norm{p_g-p_t}$, $I_g$ indicate successful arrival and $I_b$ indicate a flight-boundary failure. The implemented reward is
+\begin{align}
+r_t={}&100I_g+5(e_{t-1}-e_t)-10I_b-0.1\Delta t\nonumber\\
+&-0.5e_t\Delta t-0.1\norm{v_t}^2\Delta t.
+\label{eq:reward}
+\end{align}
+The first four terms follow the terminal/progress/boundary/time structure used in the source approach. The distance and speed costs and the chosen scaling are local adaptations. The speed cost is intended to discourage excessive motion, while the terminal reward distinguishes arrival from merely approaching the destination. These design intentions are assessed through actual success measurements rather than assumed to guarantee convergence.
+
+Arrival requires $e_t<0.10$~m and $\norm{v_t}\leq0.20$~m/s for five consecutive 20~Hz control samples. The episode limit is 500 samples, or 25~s. Leaving the configured flight bounds or dropping below 0.05~m altitude is a terminal failure. A time limit is a truncation. Geometric obstacle collision is recorded by the evaluator; it is not conflated with the goal or boundary stopping rule. An episode can therefore reach a goal while still having a safety violation in its recorded trajectory.
+
+\section{IMM prediction}
+The implementation maintains native CV, CA and CT states of dimensions 6, 9 and 7, respectively. Mixing is performed through a common nine-dimensional position--velocity--acceleration representation. If $\mu_i$ denotes the prior probability of model $i$ and $\Pi_{ij}$ the transition probability, then
+\begin{equation}
+\bar c_j=\sum_i\Pi_{ij}\mu_i,\qquad
+\mu_{i\mid j}=\frac{\Pi_{ij}\mu_i}{\bar c_j}.
+\end{equation}
+Mixed means and covariances initialize the model-specific updates. Measurement likelihoods update the mode probabilities. Each model is then propagated independently over the horizon, and predicted positions are fused using the current probabilities:
+\begin{equation}
+\hat p_{o,k+i\mid k}=\sum_j\mu_j(k)\hat p^{(j)}_{o,k+i\mid k}.
+\end{equation}
+The transition matrix has diagonal entries 0.6 and off-diagonal entries 0.2. Process and position-measurement covariance scales are both 0.05. The prediction horizon is $N=5$, corresponding to 0.25~s. This weighted forecast is not an uncertainty envelope.
+
+\section{Geometry and adaptive barrier conditions}
+The geometric centre separation is $d=\norm{p-p_o}$. With configured drone and obstacle radii of 0.2~m and a 0.1~m cushion,
+\begin{equation}
+d_c=0.4\ \mathrm{m},\qquad d_s=0.5\ \mathrm{m}.
+\end{equation}
+A collision proxy is recorded when $d\leq d_c$; a buffer violation is recorded when $d<d_s$. Surface clearance is $d-d_c$. These definitions are kept distinct in every results table.
+
+For predicted positions at horizon index $i$, define
+\begin{align}
+h_i&=\tfrac12\left(\norm{\hat p_i-\hat p_{o,i}}^2-d_s^2\right),\\
+\psi_i&=h_{i+1}-(1-\gamma_1)h_i,\\
+b_i&=\psi_{i+1}-(1-\gamma_2\gamma)\psi_i,
+\end{align}
+with $\gamma_1=0.8$, $\gamma_2=0.5$ and $0\leq\gamma\leq1$. The local filter constrains future clearance values and the higher-order residuals. The adaptive target is based on fractional closing rate. With $p_r=p_o-p$ and $v_r=v_o-v$,
+\begin{equation}
+q=\max\left(0,-\frac{p_r^\mathsf{T}v_r}{\norm{p_r}^2}\right),\qquad
+\gamma^*=\operatorname{clip}(1-T_q q,0,1),
+\end{equation}
+where $T_q=2$~s; the implementation protects the denominator near zero. This definition and its numerical realization are implementation choices, not a new safety theorem.
+
+\section{Numerical safety-filter optimization}
+The candidate command is held constant over each forecast. Drone positions are obtained from a separate PyBullet world initialized from the live state, rather than only from the ideal acceleration model. The filter minimizes
+\begin{equation}
+\lambda_u\norm{u-u_{\rm ref}}^2+
+\lambda_\gamma(\gamma-\gamma^*)^2+
+\lambda_\delta\left(\delta^2+\norm{\xi}^2\right),
+\label{eq:filtercost}
+\end{equation}
+where $\lambda_u=1$, $\lambda_\gamma=10$ and $\lambda_\delta=10^4$. The constraints include command bounds, the coefficient interval, future clearance, and higher-order residuals with nonnegative slack $\xi$. A coefficient-tracking condition is
+\begin{equation}
+(\gamma-\gamma^*)^2\leq\delta+
+(1-\alpha)(\gamma_{\rm prev}-\gamma^*_{\rm prev})^2,
+\quad \delta\geq0,\quad \alpha=0.9.
+\end{equation}
+Clearance constraints are not given slack in the convex subproblem; the higher-order conditions are relaxed. Finite-difference linearization and a shrinking trust region are used to form convex subproblems. Because the coefficient condition is quadratic, the implementation is more accurately described as a convex quadratic/conic subproblem than as an unconstrained quadratic-program projection.
+
+If the nominal command passes all predicted residual checks, it is returned unchanged. Otherwise CLARABEL is tried first, with SCS as a backup. Finite solutions must pass a numerical feasibility check. Candidate commands are then checked using the nonlinear rollout; up to six linearization passes are allowed. If no acceptable command is found, evaluation stops with a filter-failure status. Stopping the simulated episode is not a demonstrated emergency-flight maneuver.
+
+\begin{algorithm}[htbp]
+\caption{Hierarchical control at one evaluation sample}\label{alg:control}
+\KwIn{Drone observation $o_k$, obstacle position $z_k$, trained PPO policy}
+Update IMM using $z_k$ and predict $\hat p_{o,k:k+N}$\;
+Compute deterministic nominal command $u_{\rm ref}$ from PPO\;
+Predict drone response to the held nominal command\;
+\eIf{all predicted barrier residuals are nonnegative}{Return $u_{\rm ref}$\;}{
+Linearize residuals and solve the constrained subproblem\;
+Verify the candidate using a nonlinear drone rollout\;
+Repeat with updated margins if needed, up to the configured pass limit\;
+\eIf{a verified command exists}{Apply the bounded command\;}{Record filter failure and terminate evaluation\;}}
+\end{algorithm}
+
+\section{Meaning and limits of safety}
+Predicted constraint satisfaction is conditional on the forecasts. A measured obstacle can move differently from its predicted position, and an optimization may become infeasible under limited acceleration authority. Higher-order slack further separates the implemented constraint checks from a strict invariance proof. The experiments therefore report observed collision and buffer events, solver diagnostics and execution times. They do not claim that the mathematical guarantees of an idealized barrier construction automatically apply to every simulated or physical trajectory.

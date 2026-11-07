@@ -1,0 +1,53 @@
+\contentsline {chapter}{Certificate}{i}{chapter*.1}%
+\contentsline {chapter}{Abstract}{ii}{chapter*.2}%
+\contentsline {chapter}{Abbreviations and Notation}{viii}{chapter*.7}%
+\contentsline {chapter}{\numberline {1}Introduction}{1}{chapter.1}%
+\contentsline {section}{\numberline {1.1}Motivation}{1}{section.1.1}%
+\contentsline {section}{\numberline {1.2}Problem statement}{1}{section.1.2}%
+\contentsline {section}{\numberline {1.3}Objectives and scope}{2}{section.1.3}%
+\contentsline {section}{\numberline {1.4}Project contribution}{2}{section.1.4}%
+\contentsline {section}{\numberline {1.5}Organization of the report}{2}{section.1.5}%
+\contentsline {chapter}{\numberline {2}Background and Related Work}{3}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Reinforcement learning and PPO}{3}{section.2.1}%
+\contentsline {section}{\numberline {2.2}Safety filtering}{3}{section.2.2}%
+\contentsline {section}{\numberline {2.3}Obstacle prediction with multiple models}{4}{section.2.3}%
+\contentsline {section}{\numberline {2.4}Simulation platform and classical baseline}{4}{section.2.4}%
+\contentsline {section}{\numberline {2.5}Relationship to the source paper}{4}{section.2.5}%
+\contentsline {chapter}{\numberline {3}System Design and Mathematical Formulation}{6}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Hierarchical architecture}{6}{section.3.1}%
+\contentsline {section}{\numberline {3.2}State, observation and action}{6}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Navigation reward and stopping criterion}{7}{section.3.3}%
+\contentsline {section}{\numberline {3.4}IMM prediction}{8}{section.3.4}%
+\contentsline {section}{\numberline {3.5}Geometry and adaptive barrier conditions}{8}{section.3.5}%
+\contentsline {section}{\numberline {3.6}Numerical safety-filter optimization}{9}{section.3.6}%
+\contentsline {section}{\numberline {3.7}Meaning and limits of safety}{10}{section.3.7}%
+\contentsline {chapter}{\numberline {4}Implementation and Experimental Method}{11}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Software organization}{11}{section.4.1}%
+\contentsline {section}{\numberline {4.2}Training configuration}{11}{section.4.2}%
+\contentsline {section}{\numberline {4.3}Curriculum and validation}{12}{section.4.3}%
+\contentsline {section}{\numberline {4.4}Checkpoint identity and reporting policy}{13}{section.4.4}%
+\contentsline {section}{\numberline {4.5}Additional goal evaluation}{13}{section.4.5}%
+\contentsline {section}{\numberline {4.6}Moving-obstacle scenarios}{14}{section.4.6}%
+\contentsline {section}{\numberline {4.7}Metrics and interpretation}{14}{section.4.7}%
+\contentsline {chapter}{\numberline {5}Results and Discussion}{15}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Training progress and early stopping}{15}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Additional goal-reaching tests}{16}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Scenario results for the selected model}{17}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}Linear obstacle}{18}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}Accelerating obstacle}{19}{subsection.5.3.2}%
+\contentsline {subsection}{\numberline {5.3.3}Figure-eight obstacle}{19}{subsection.5.3.3}%
+\contentsline {section}{\numberline {5.4}Final-checkpoint comparison}{21}{section.5.4}%
+\contentsline {section}{\numberline {5.5}Diagnosis of earlier near-goal failures}{21}{section.5.5}%
+\contentsline {section}{\numberline {5.6}Computational and safety limitations}{22}{section.5.6}%
+\contentsline {section}{\numberline {5.7}Threats to validity}{22}{section.5.7}%
+\contentsline {section}{\numberline {5.8}Discussion}{23}{section.5.8}%
+\contentsline {chapter}{\numberline {6}Conclusions and Future Work}{24}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Conclusions}{24}{section.6.1}%
+\contentsline {section}{\numberline {6.2}Future work}{25}{section.6.2}%
+\contentsline {chapter}{References}{26}{chapter*.23}%
+\contentsline {chapter}{\numberline {A}Reproducibility and Artifacts}{27}{appendix.A}%
+\contentsline {section}{\numberline {A.1}Experiment identity}{27}{section.A.1}%
+\contentsline {section}{\numberline {A.2}Recorded dependencies}{27}{section.A.2}%
+\contentsline {section}{\numberline {A.3}Evaluation commands}{27}{section.A.3}%
+\contentsline {section}{\numberline {A.4}Figure inventory}{28}{section.A.4}%
+\contentsline {section}{\numberline {A.5}Interpretation checklist}{29}{section.A.5}%

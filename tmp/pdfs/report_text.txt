@@ -1,0 +1,1005 @@
+Simulation-Based Evaluation of UA V
+Navigation Using PPO and Adaptive
+Control Barrier Functions
+B.Tech. Project Report
+Dual Degree Programme
+Submitted by
+Tridibesh Sarkar
+Roll Number: 23AE30023
+Supervisor
+Prof. Priyam Chakraborty
+Department of Aerospace Engineering
+Indian Institute of Technology Kharagpur
+November 2026
+
+Abstract
+Autonomous unmanned aerial vehicles must achieve navigation objectives while main-
+taining adequate separation from moving obstacles. A reinforcement-learning policy
+can learn useful motion commands, but successful goal reaching alone does not estab-
+lish obstacle safety. This project implements and evaluates a paper-inspired hierar-
+chical controller that combines proximal policy optimization (PPO), an interacting
+multiple model (IMM) obstacle predictor, and an adaptive control barrier function
+(ACBF) ﬁlter. The evaluation uses a Crazyﬂie CF2X model in PyBullet and compares
+pure PPO, the same PPO with IMM and ACBF, and a classical PID-based reference
+controller with the same ﬁlter.
+The implementation uses a 19-dimensional observation, bounded net-acceleration com-
+mands, an inner attitude loop, and a staged goal-distance curriculum. A fresh eight-
+environment training run with a two-million-transition budget stopped at 670,000
+transitions after satisfying its repeated-validation condition. The automatically se-
+lected and validated checkpoint, saved at 630,000 transitions, is used for the main
+scenario results. Both this checkpoint and the ﬁnal checkpoint reached 59 of 60 addi-
+tional evaluation goals. The remaining target produced a small but persistent position
+error outside the predeﬁned 0.10 m success radius.
+All three controllers reached the shared goal in the linear, accelerating and ﬁgure-eight
+obstacle scenarios. For the selected checkpoint in the ﬁgure-eight case, pure PPO
+entered the 0.50 m safety buﬀer, attaining a minimum centre distance of 0.464 m.
+PPO with ACBF maintained 0.770 m and reached the goal in 13.60 s, compared with
+13.70 s for pure PPO. The PID-based baseline was faster, reaching the same goal in
+7.80 s. These experiments demonstrate eﬀective integration and an observed safety-
+buﬀer beneﬁt, while exposing remaining limitations in goal generalization, numerical
+timing and prediction robustness. The results concern one training seed and a ﬁnite
+set of simulated trials; they do not constitute a general safety guarantee or hardware
+validation.
+Keywords: UA V navigation; proximal policy optimization; interacting multiple
+model; adaptive control barrier function; safety ﬁltering; PyBullet.
+i
+
+Contents
+Abstract i
+Abbreviations and Notation vii
+1 Introduction 1
+1.1 Motivation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1
+1.2 Problem statement . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1
+1.3 Objectives and scope . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2
+1.4 Project contribution . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2
+1.5 Organization of the report . . . . . . . . . . . . . . . . . . . . . . . . . 2
+2 Background and Related Work 3
+2.1 Reinforcement learning and PPO . . . . . . . . . . . . . . . . . . . . . 3
+2.2 Safety ﬁltering . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+2.3 Obstacle prediction with multiple models . . . . . . . . . . . . . . . . . 4
+2.4 Simulation platform and classical baseline . . . . . . . . . . . . . . . . 4
+2.5 Relationship to the source paper . . . . . . . . . . . . . . . . . . . . . . 4
+3 System Design and Mathematical Formulation 6
+3.1 Hierarchical architecture . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+3.2 State, observation and action . . . . . . . . . . . . . . . . . . . . . . . 6
+3.3 Navigation reward and stopping criterion . . . . . . . . . . . . . . . . . 7
+3.4 IMM prediction . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+3.5 Geometry and adaptive barrier conditions . . . . . . . . . . . . . . . . 8
+3.6 Numerical safety-ﬁlter optimization . . . . . . . . . . . . . . . . . . . . 9
+3.7 Meaning and limits of safety . . . . . . . . . . . . . . . . . . . . . . . . 9
+4 Implementation and Experimental Method 11
+4.1 Software organization . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+4.2 Training conﬁguration . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+4.3 Curriculum and validation . . . . . . . . . . . . . . . . . . . . . . . . . 12
+4.4 Checkpoint identity and reporting policy . . . . . . . . . . . . . . . . . 13
+4.5 Additional goal evaluation . . . . . . . . . . . . . . . . . . . . . . . . . 13
+4.6 Moving-obstacle scenarios . . . . . . . . . . . . . . . . . . . . . . . . . 14
+ii
+
+Contents
+4.7 Metrics and interpretation . . . . . . . . . . . . . . . . . . . . . . . . . 14
+5 Results and Discussion 15
+5.1 Training progress and early stopping . . . . . . . . . . . . . . . . . . . 15
+5.2 Additional goal-reaching tests . . . . . . . . . . . . . . . . . . . . . . . 16
+5.3 Main scenario comparison: selected checkpoint . . . . . . . . . . . . . . 17
+5.3.1 Linear obstacle . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+5.3.2 Accelerating obstacle . . . . . . . . . . . . . . . . . . . . . . . . 19
+5.3.3 Figure-eight obstacle . . . . . . . . . . . . . . . . . . . . . . . . 19
+5.4 Final-checkpoint comparison . . . . . . . . . . . . . . . . . . . . . . . . 21
+5.5 Diagnosis of earlier near-goal failures . . . . . . . . . . . . . . . . . . . 21
+5.6 Computational and safety limitations . . . . . . . . . . . . . . . . . . . 22
+5.7 Threats to validity . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+5.8 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+6 Conclusions and Future Work 24
+6.1 Conclusions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+6.2 Future work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+References 26
+A Reproducibility and Artifact Inventory 27
+A.1 Experiment identity . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+A.2 Recorded dependencies . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+A.3 Evaluation commands . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+A.4 Figure inventory . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+A.5 Interpretation checklist . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+iii
+
+List of Figures
+3.1 Implemented hierarchy. The safety layer is used during evaluation;
+PPO training uses goal-navigation episodes with a distant obstacle. . . 6
+5.1 Validation history for the reported eight-environment run. The dashed
+vertical line marks 507,904 transitions, the end of the earlier same-
+seed run. Current-stage goals change on curriculum promotion. The
+repeated end-of-training validation is counted only once in this plot. . . 15
+5.2 Observed success on the same additional goal set for the two check-
+points. No out-of-bounds event occurred in these tests. . . . . . . . . . 16
+5.3 Selected-checkpoint comparison. In the right panel the dashed line is
+the 0.50 m safety boundary and the dotted line is the 0.40 m collision
+threshold. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+5.4 Goal-error histories for the selected checkpoint. The dotted horizontal
+line is the 0.10 m position tolerance; arrival additionally requires the
+speed and hold-time conditions. . . . . . . . . . . . . . . . . . . . . . . 18
+5.5 Case 1 trajectories for the selected checkpoint. A spatial trajectory
+plot does not by itself establish time-aligned obstacle clearance; that is
+measured from the logged states. . . . . . . . . . . . . . . . . . . . . . 18
+5.6 Case 2 trajectories for the selected checkpoint. Both RL variants arrive,
+while the ﬁltered path maintains a larger sampled minimum separation. 19
+5.7 Case 3 trajectories for the selected checkpoint. PPO+ACBF and
+PID+ACBF use the same obstacle predictor and ﬁlter but diﬀerent
+nominal commands. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+5.8 Time-aligned centre separation in case 3. Pure RL enters the buﬀer;
+the ﬁltered methods remain above it in these ﬂights. Distance after a
+method’s arrival is not evaluated because its episode has ended. . . . . 20
+A.1 Supplementary case 1 separation history for the selected checkpoint. . . 29
+A.2 Supplementary case 2 separation history for the selected checkpoint. . . 30
+iv
+
+List of Tables
+4.1 Principal implementation modules. . . . . . . . . . . . . . . . . . . . . 11
+4.2 PPO and environment settings used in the reported run. . . . . . . . . 12
+5.1 Additional goal tests; twenty goals per distance group. . . . . . . . . . 16
+5.2 Main scenario results for the validated checkpoint. dmin is centre sep-
+aration, not surface clearance. Cases 1–3 are linear, accelerating and
+ﬁgure-eight motion. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+5.3 Separate comparison using the ﬁnal 670,000-step checkpoint. PID rows
+are repeated for consistent comparison and are not independent re-
+peated trials. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+A.1 Versions recorded in the training manifest. . . . . . . . . . . . . . . . . 28
+A.2 Figure ﬁles and their role. . . . . . . . . . . . . . . . . . . . . . . . . . 29
+v
+
+List of Algorithms
+1 Hierarchical control at one evaluation sample . . . . . . . . . . . . . . . 10
+vi
+
+Abbreviations and Notation
+Symbol / abbreviation Meaning
+UA V Unmanned aerial vehicle
+RL / PPO Reinforcement learning / proximal policy optimization
+IMM Interacting multiple model estimator
+CV / CA / CT Constant-velocity / constant-acceleration /
+coordinated-turn model
+CBF / ACBF Control barrier function / adaptive control barrier
+function
+PID Proportional–integral–derivative controller
+p,v UA V position and velocity in the inertial frame
+pg,p o Goal position and obstacle centre position
+uref,u Nominal and ﬁltered net-acceleration commands
+∆ t,N Control interval and prediction horizon
+d,d c,d s Centre separation, collision threshold and safety boundary
+e Euclidean position error to the goal
+hi,ψi Predicted barrier value and ﬁrst-order discrete barrier
+diﬀerence
+γ Adaptive barrier coeﬃcient; distinct from PPO’s discount
+factor
+β PPO reward-discount factor, denoted ppo_gamma in code
+ξ,δ Nonnegative higher-order and coeﬃcient-update
+relaxation variables
+vii
+
+Chapter 1
+Introduction
+1.1 Motivation
+Drone navigation in a dynamic environment involves two related requirements: mov-
+ing toward the destination and preserving separation from obstacles. A controller
+can satisfy one requirement while failing the other. For example, remaining station-
+ary may avoid an obstacle but fail the mission, while a fast direct trajectory may
+reach the goal after passing too close to another object. An evaluation should there-
+fore measure arrival, ﬁnal tracking error, obstacle separation and computational cost
+together.
+Learning-based navigation is attractive because the mapping from state to control can
+be improved through interaction with a simulator. However, the resulting policy is
+not automatically a reliable obstacle-avoidance controller. In this project, PPO learns
+goal-directed motion, while an explicit lower layer uses predicted obstacle motion to
+modify commands. The design follows the hierarchical idea of Gao and Sun ( 2026),
+with implementation adaptations documented throughout this report.
+1.2 Problem statement
+The simulated system consists of one quadrotor and one moving spherical obstacle.
+The drone starts from a prescribed position and must enter a goal neighborhood within
+a ﬁnite episode. The nominal policy outputs bounded three-dimensional acceleration
+commands. The safety layer receives the drone state and an estimate of the obstacle
+trajectory, and attempts to preserve a prescribed separation while remaining close to
+the nominal command.
+The central research question is: Can a prediction-based adaptive safety ﬁlter improve
+measured obstacle separation while retaining the goal-reaching behavior of a learned
+navigation policy? A second question concerns the cost of that ﬁlter in mission time,
+path length and computation. A third concerns the relationship between successful
+benchmark trajectories and generalization to other destinations.
+1
+
+1. Introduction
+1.3 Objectives and scope
+The project has four objectives. First, it establishes a consistent interface between
+PPO, the drone dynamics and the safety ﬁlter. Second, it implements obstacle-state
+estimation and ﬁnite-horizon ﬁltering. Third, it compares pure RL, RL with ACBF,
+and a classical controller with the same ACBF layer. Finally, it evaluates learning
+progress and investigates failures rather than treating every saved model as converged.
+The scope is a simulation study with one drone, one obstacle, prescribed obstacle
+trajectories and exact simulated obstacle-position measurements. The estimator still
+uses process and measurement covariance assumptions, but a realistic noisy sensing
+pipeline is not evaluated. Multi-drone coordination, multiple simultaneous obstacles,
+wind disturbances and physical ﬂight tests are outside the demonstrated scope.
+1.4 Project contribution
+The contribution is an implementation and empirical evaluation of a paper-inspired
+control architecture. It includes a versioned policy interface, consistent plant forecasts,
+a curriculum-based training procedure, recorded success and safety diagnostics, and
+checkpoint comparisons that expose residual position bias. It is not a claim of a new
+PPO algorithm or a new formal barrier-function theorem.
+The evidence is deliberately separated into three levels. The training logs show
+whether the conﬁgured validation objective is reached. Additional goal tests examine
+behavior beyond the callback’s ﬁxed goal set. Moving-obstacle tests examine the in-
+teraction between navigation and ﬁltering. A strong result at one level is not treated
+as proof at the other levels.
+1.5 Organization of the report
+Chapter 2 introduces the relevant learning and control concepts. Chapter 3 formulates
+the implemented navigation and ﬁltering problem. Chapter 4 describes the software,
+training and evaluation procedures. Chapter 5 reports the measured results and
+limitations. Chapter 6 presents conclusions and future work. Appendix A records
+provenance, reproduction commands and the ﬁgure inventory.
+2
+
+Chapter 2
+Background and Related Work
+2.1 Reinforcement learning and PPO
+A policy maps observations to actions, and training adjusts the policy to improve
+expected return. Let ot denote an observation, at an action and rt a reward. With
+discount factor β, the return is Gt =
+∑∞
+j=0βjrt+j. A higher return is useful only
+insofar as the reward and evaluation criteria reﬂect the intended task.
+PPO limits policy changes using a clipped probability-ratio objective (Schulman et al.
+2017). Writing ρt(θ) = πθ(at |ot)/πθold(at |ot) and ˆAt for an estimated advantage,
+the policy objective is
+Lclip(θ) = Et
+[
+min
+(
+ρt(θ) ˆAt, clip(ρt(θ), 1 − ϵ,1 +ϵ) ˆAt
+)]
+. (2.1)
+The present implementation uses Stable-Baselines3 rather than a new implementa-
+tion of PPO (Raﬃn et al. 2021). Training samples stochastic actions; the reported
+policy evaluations use deterministic actions. Consequently, success over a training
+episode window and success of the ﬁnal deterministic policy are related but diﬀerent
+measurements.
+2.2 Safety ﬁltering
+A safety ﬁlter modiﬁes a nominal control command using constraints derived from the
+system state. The nominal controller retains responsibility for task progress. Barrier-
+function methods provide a mathematical language for describing a safe set and re-
+stricting control inputs to maintain it under appropriate assumptions (Ames et al.
+2017). Those assumptions include the dynamics, available control authority and fea-
+sibility of the constraints.
+In a numerical implementation, ﬁnite sampling, state-estimation error and approxi-
+mate optimization must also be considered. Therefore a barrier-inspired controller
+operating successfully in a few simulations is not itself a proof of forward invariance.
+3
+
+2. Background and Related Work
+This report uses measured geometric separation to assess the local implementation
+and explicitly records cases where prediction or feasibility limits have appeared.
+2.3 Obstacle prediction with multiple models
+One motion model may not describe every phase of an obstacle trajectory. A constant-
+velocity model is suitable for straight motion, a constant-acceleration model represents
+changes in speed, and a coordinated-turn model represents changing heading. The
+local IMM predictor combines these alternatives by mixing their state estimates, per-
+forming model-speciﬁc updates, updating model probabilities and fusing the resulting
+predictions. This is the predictor structure adopted from the source architecture (Gao
+and Sun 2026).
+The combination is useful for a ﬁnite prediction horizon, but its output remains an
+estimate. A small error matters when a predicted trajectory passes close to the safety
+boundary. The study therefore distinguishes predicted separation from the separation
+measured after the simulator executes the command.
+2.4 Simulation platform and classical baseline
+The gym-pybullet-drones environment provides quadrotor simulation and control
+components suitable for learning experiments (Panerati et al. 2021). This project
+builds a custom navigation environment around its Crazyﬂie model. The actual con-
+trol command is converted to rotor inputs using an inner attitude controller; the
+vehicle is not advanced solely by an ideal point-mass equation.
+A position-error controller provides a classical comparison. It is labelled PID+ACBF
+to retain the repository terminology, although the evaluated position gains set the inte-
+gral term to zero. Thus its outer navigation law is eﬀectively proportional–derivative
+control. All three methods share the same simulated plant and stopping criterion.
+2.5 Relationship to the source paper
+Gao and Sun ( 2026) motivates the combination of learned reference commands, IMM
+prediction and adaptive barrier ﬁltering. The present work evaluates that structural
+idea, not an exact reproduction of every reported paper experiment. The local policy
+has expanded observations, net-acceleration semantics, an explicit curriculum and
+additional reward terms. A single PPO checkpoint is used in both RL variants across
+all three obstacle cases. These choices make the eﬀect of adding the ﬁlter observable
+4
+
+2. Background and Related Work
+for a ﬁxed policy, but do not reproduce comparisons involving separately trained
+case-speciﬁc policies.
+No numerical superiority claim is transferred from the source paper to this implemen-
+tation. In particular, the local PID baseline remains faster, and the observed safety
+beneﬁt is reported using explicit centre-distance thresholds. Claims about universal
+safety, adaptation beneﬁts relative to a ﬁxed CBF, or the independent contribution
+of IMM require further analysis and experiments.
+5
+
+Chapter 3
+System Design and Mathematical
+Formulation
+3.1 Hierarchical architecture
+Figure 3.1 shows the implemented information ﬂow. PPO proposes a nominal com-
+mand from the drone observation. The IMM processes obstacle positions indepen-
+dently of PPO. The ACBF layer combines the predicted obstacle trajectory with can-
+didate drone trajectories to select a bounded command. The inner controller converts
+that command into rotor inputs. In the pure-RL comparison, the nominal command
+bypasses the IMM/ACBF layer; the observation and PPO weights are unchanged.
+Drone state
+and goal PPO policy ACBF ﬁlter
+Obstacle
+positions IMM predictor Attitude loop
+and PyBullet
+uref
+u
+state feedback
+Figure 3.1: Implemented hierarchy. The safety layer is used during evaluation; PPO
+training uses goal-navigation episodes with a distant obstacle.
+3.2 State, observation and action
+Let p,v ∈ R3 denote inertial position and velocity, and let pg denote the target. The
+position error is pg − p. A conceptual translational model is
+˙p =v, ˙v = −ge3 + T
+mRe3, (3.1)
+whereR maps body-frame vectors to the inertial frame and T is total rotor thrust. The
+actual simulator includes rotational dynamics and the inner controller; this equation
+6
+
+3. System Design and Mathematical Formulation
+is not a replacement for the simulated plant.
+The normalized policy action a ∈ [− 1, 1]3 is mapped to net acceleration u = kmaa,
+subject to the eﬀective command bounds. Here kma = 1 , giving an eﬀective per-axis
+range of [− 1, 1] m/s2. Although the conﬁguration also contains nominal bounds of
+[− 3, 3], the implementation intersects them with the normalized action range. The
+desired force is m(u+ge3), so gravity is added once. A zero net-acceleration command
+corresponds to a level hover in the ideal stationary case.
+The 19-dimensional observation is
+o =
+[ v
+2, pg − p
+5 , η
+π, ω
+10, ηprev
+π, p
+10, f h
+]
+, (3.2)
+where ηis roll–pitch–yaw, ωis angular velocity, ηprev is stored inner-controller at-
+titude history and fh is the fraction of the required goal-hold interval completed.
+The ﬁxed scales are part of the checkpoint interface. Obstacle position is not in-
+cluded. Absolute position provides information relevant to ﬂight bounds, but also
+allows location-dependent policies; its eﬀect is revisited in the evaluation.
+3.3 Navigation reward and stopping criterion
+Let et = ∥pg − pt∥, Ig indicate successful arrival and Ib indicate a ﬂight-boundary
+failure. The implemented reward is
+rt = 100Ig + 5(et− 1 − et) − 10Ib − 0. 1∆ t
+− 0. 5et∆ t − 0. 1 ∥vt∥2 ∆ t. (3.3)
+The ﬁrst four terms follow the terminal/progress/boundary/time structure used in the
+source approach. The distance and speed costs and the chosen scaling are local adap-
+tations. The speed cost is intended to discourage excessive motion, while the terminal
+reward distinguishes arrival from merely approaching the destination. These design
+intentions are assessed through actual success measurements rather than assumed to
+guarantee convergence.
+Arrival requires et < 0. 10 m and ∥vt∥ ≤ 0. 20 m/s for ﬁve consecutive 20 Hz control
+samples. The episode limit is 500 samples, or 25 s. Leaving the conﬁgured ﬂight
+bounds or dropping below 0.05 m altitude is a terminal failure. A time limit is
+a truncation. Geometric obstacle collision is recorded by the evaluator; it is not
+conﬂated with the goal or boundary stopping rule. An episode can therefore reach a
+goal while still having a safety violation in its recorded trajectory.
+7
+
+3. System Design and Mathematical Formulation
+3.4 IMM prediction
+The implementation maintains native CV, CA and CT states of dimensions 6, 9 and
+7, respectively. Mixing is performed through a common nine-dimensional position–
+velocity–acceleration representation. If µi denotes the prior probability of model i
+and Π ij the transition probability, then
+¯cj =
+∑
+i
+Π ijµi, µ i|j = Π ijµi
+¯cj
+. (3.4)
+Mixed means and covariances initialize the model-speciﬁc updates. Measurement like-
+lihoods update the mode probabilities. Each model is then propagated independently
+over the horizon, and predicted positions are fused using the current probabilities:
+ˆpo,k +i|k =
+∑
+j
+µj(k)ˆp(j)
+o,k +i|k. (3.5)
+The transition matrix has diagonal entries 0.6 and oﬀ-diagonal entries 0.2. Process
+and position-measurement covariance scales are both 0.05. The prediction horizon is
+N = 5, corresponding to 0.25 s. This weighted forecast is not an uncertainty envelope.
+3.5 Geometry and adaptive barrier conditions
+The geometric centre separation is d = ∥p − po∥. With conﬁgured drone and obstacle
+radii of 0.2 m and a 0.1 m cushion,
+dc = 0. 4 m, d s = 0. 5 m. (3.6)
+A collision proxy is recorded when d ≤ dc; a buﬀer violation is recorded when d<d s.
+Surface clearance is d − dc. These deﬁnitions are kept distinct in every results table.
+For predicted positions at horizon index i, deﬁne
+hi = 1
+2
+(
+∥ˆpi − ˆpo,i ∥2 − d2
+s
+)
+, (3.7)
+ψi =hi+1 − (1 − γ1)hi, (3.8)
+bi =ψi+1 − (1 − γ2γ)ψi, (3.9)
+with γ1 = 0. 8, γ2 = 0. 5 and 0 ≤ γ≤ 1. The local ﬁlter constrains future clearance
+values and the higher-order residuals. The adaptive target is based on fractional
+8
+
+3. System Design and Mathematical Formulation
+closing rate. With pr =po − p and vr =vo − v,
+q = max
+(
+0, − pT
+rvr
+∥pr∥2
+)
+, γ ∗ = clip(1 − Tqq, 0, 1), (3.10)
+where Tq = 2 s; the implementation protects the denominator near zero. This def-
+inition and its numerical realization are implementation choices, not a new safety
+theorem.
+3.6 Numerical safety-ﬁlter optimization
+The candidate command is held constant over each forecast. Drone positions are
+obtained from a separate PyBullet world initialized from the live state, rather than
+only from the ideal acceleration model. The ﬁlter minimizes
+λu ∥u − uref∥2 +λγ(γ− γ∗)2 +λδ
+(
+δ2 + ∥ξ∥2)
+, (3.11)
+where λu = 1 , λγ = 10 and λδ = 10 4. The constraints include command bounds,
+the coeﬃcient interval, future clearance, and higher-order residuals with nonnegative
+slackξ. A coeﬃcient-tracking condition is
+(γ− γ∗)2 ≤ δ+ (1 − α)(γprev − γ∗
+prev)2, δ ≥ 0, α = 0. 9. (3.12)
+Clearance constraints are not given slack in the convex subproblem; the higher-order
+conditions are relaxed. Finite-diﬀerence linearization and a shrinking trust region are
+used to form convex subproblems. Because the coeﬃcient condition is quadratic, the
+implementation is more accurately described as a convex quadratic/conic subproblem
+than as an unconstrained quadratic-program projection.
+If the nominal command passes all predicted residual checks, it is returned unchanged.
+Otherwise CLARABEL is tried ﬁrst, with SCS as a backup. Finite solutions must
+pass a numerical feasibility check. Candidate commands are then checked using the
+nonlinear rollout; up to six linearization passes are allowed. If no acceptable command
+is found, evaluation stops with a ﬁlter-failure status. Stopping the simulated episode
+is not a demonstrated emergency-ﬂight maneuver.
+3.7 Meaning and limits of safety
+Predicted constraint satisfaction is conditional on the forecasts. A measured obstacle
+can move diﬀerently from its predicted position, and an optimization may become
+9
+
+3. System Design and Mathematical Formulation
+Algorithm 1: Hierarchical control at one evaluation sample
+Input: Drone observation ok, obstacle position zk, trained PPO policy
+Update IMM using zk and predict ˆpo,k :k+N ;
+Compute deterministic nominal command uref from PPO;
+Predict drone response to the held nominal command;
+if all predicted barrier residuals are nonnegative then
+Return uref;
+else
+Linearize residuals and solve the constrained subproblem;
+Verify the candidate using a nonlinear drone rollout;
+Repeat with updated margins if needed, up to the conﬁgured pass limit;
+if a veriﬁed command exists then
+Apply the bounded command;
+else
+Record ﬁlter failure and terminate evaluation;
+infeasible under limited acceleration authority. Higher-order slack further separates
+the implemented constraint checks from a strict invariance proof. The experiments
+therefore report observed collision and buﬀer events, solver diagnostics and execution
+times. They do not claim that the mathematical guarantees of an idealized barrier
+construction automatically apply to every simulated or physical trajectory.
+10
+
+Chapter 4
+Implementation and Experimental
+Method
+4.1 Software organization
+The project uses Python, PyBullet, gym-pybullet-drones, Gymnasium, Stable-
+Baselines3, PyTorch and CVXPY. Table 4.1 identiﬁes the principal components.
+Experiment manifests record package versions, conﬁguration snapshots, source ﬁn-
+gerprints and model hashes. This prevents plots from being silently associated with
+a diﬀerent checkpoint.
+T able 4.1: Principal implementation modules.
+Module Responsibility
+UAVNavEnv.py Reset, observation, reward, dynamics and episode outcomes
+acceleration_ctrl.py Net acceleration to attitude and rotor commands
+imm_predictor.py Model mixing, estimation and obstacle forecasts
+acbf_filter.py Adaptive constraints, optimization and veriﬁcation
+hierarchical_ctrl.py Integration of PPO or PID with IMM and ACBF
+train_ppo.py Learning, curriculum, validation and checkpoint selection
+evaluate.py Fixed-scenario comparisons and outcome logging
+utils/logger.py Trajectories, distances, solver data and ﬁgures
+The physics and attitude loop run at 240 Hz. PPO and the safety ﬁlter issue com-
+mands at 20 Hz, so each command spans twelve physics steps. Episode resets clear
+the attitude-controller history. A shadow simulator copies the drone state and con-
+troller memory for forecasts without advancing the live world. The policy interface is
+checked before evaluation, including action semantics, scales and control frequencies.
+4.2 Training conﬁguration
+The run analysed in this report began from scratch with seed 42, eight environments
+and a requested budget of two million aggregate transitions. It did not resume the
+11
+
+4. Implementation and Experimental Method
+previous checkpoint. Its early history matches the earlier run with the same seed and
+settings; it is therefore not an independent-seed replication.
+T able 4.2: PPO and environment settings used in the reported run.
+Parameter Value
+Actor and critic hidden layers [64, 64], Tanh activation
+Learning rate 10− 4
+Steps per environment per rollout 1,024
+Environments 8
+Aggregate transitions per full rollout 8,192
+Minibatch size / epochs 128 / 5
+Reward discount β 0.99
+PPO clipping / target KL 0.2 / 0.015
+Entropy coeﬃcient / initial log standard deviation 0 / − 1. 5
+Control / physics frequency 20 / 240 Hz
+Maximum episode length 500 control samples (25 s)
+Validation interval 10,000 aggregate transitions
+The implementation uses DummyVecEnv. Multiple environments supply separate tra-
+jectories, but their simulation steps are executed sequentially; this is not eight-way
+process parallelism. In PPO, rollout size is the product of steps per environment and
+environment count (Stable-Baselines3 Contributors n.d.). A rollout/training cycle
+contains many minibatch optimizer steps, so cycle count must not be confused with
+gradient-update count.
+4.3 Curriculum and validation
+Goals are initially sampled close to the ﬁxed start [0, 0, 1]T m. The curriculum radii
+are 0.4, 1.0 and 2.5 m, followed by the full goal distribution. At a ﬁnite radius r, the
+sampled distance is between r/ 2 andr, subject to feasible altitude and ﬂight bounds.
+Promotion requires at least 80% success over a twenty-episode window for the ac-
+tive stage. The full distribution samples horizontal coordinates within approximately
+[− 5, 5] m and altitude within [0. 5, 3] m, with initial goal distance greater than 2 m.
+Four ﬁxed distant validation goals are
+{[− 3, 2, 1. 8], [1, − 4, 1. 2], [2, 2, 2. 5], [− 2, − 2, 0. 7]} m. (4.1)
+Six additional stage-dependent goals are placed along coordinate directions, with a
+lower-altitude adjustment where needed. These stage goals change when the curricu-
+12
+
+4. Implementation and Experimental Method
+lum advances. Their success curve therefore does not represent an unchanged test set
+throughout training.
+Checkpoint selection ranks the number of successes on the four ﬁxed goals, then their
+mean ﬁnal error and mean elapsed time. A separate validated checkpoint is saved
+when both validation sets pass. Training stops after three successful validations asso-
+ciated with distinct policy updates. The analysed run met this condition at 650,000,
+660,000 and 670,000 transitions. A duplicate end-of-training record at 670,000 does
+not represent an extra independent trial.
+4.4 Checkpoint identity and reporting policy
+The selected checkpoint at 630,000 transitions is byte-identical to the saved validated
+model. It is the main model used for scenario ﬁgures and tables in this report. The
+ﬁnal checkpoint at 670,000 transitions is evaluated separately. Keeping both avoids
+mixing the most favorable result from one checkpoint with another checkpoint’s safety
+metrics.
+The term “validated” refers to the conﬁgured ﬁnite goal sets, not a certiﬁcation. All
+checkpoint identiﬁers and ﬁgure sources are retained in the accompanying artifact
+manifest. Historical results are used only where they diagnose a failure or illustrate a
+change, and are labelled as historical.
+4.5 Additional goal evaluation
+Each checkpoint is evaluated on sixty stored goals: twenty nearby goals at distances
+0.2–0.4 m, twenty medium goals at 0.5–1.0 m, and twenty distant goals whose sampled
+distances range from 2.07 to 6.26 m. The obstacle is placed at [12, 12, 12]T m to isolate
+goal navigation. Actions are deterministic, and the original arrival conditions and 25 s
+limit are retained.
+The goals are the same additional evaluation set used in earlier project reviews. They
+are separate from the callback’s ten validation goals but have been reused for model
+analysis. Accordingly, they are described as an additional paired evaluation set, not as
+a newly untouched test set. Each checkpoint receives the exact same goal coordinates
+and seeds.
+13
+
+4. Implementation and Experimental Method
+4.6 Moving-obstacle scenarios
+All scenarios use start [0, 0, 1]T m and goal [5, 0, 2]T m. The three obstacle laws are
+p(1)
+o (t) = [2. 5, 0. 8t, 1. 5]T, (4.2)
+p(2)
+o (t) = [2. 5, − 1. 5 + 0. 5t + 0. 2t2, 1. 5]T, (4.3)
+p(3)
+o (t) = [2. 5 + 1. 5 sin(0. 6t), 1. 5 sin(0. 6t) cos(0. 6t), 1. 5]T. (4.4)
+The ﬁrst is linear motion, the second constant acceleration, and the third ﬁgure-eight
+motion. Pure RL and RL+ACBF use the same PPO weights. PID+ACBF uses
+position gains Kp = I, Kd = 2I and Ki = 0 , with the same prediction and ﬁltering
+layer. The comparison therefore changes the nominal controller or the presence of the
+ﬁlter, while retaining the plant and measurement protocol.
+4.7 Metrics and interpretation
+The evaluator records goal success, stop reason, arrival time, terminal position er-
+ror, terminal speed, sampled minimum centre separation and path length. Path
+length is the sum of Euclidean distances between consecutive sampled UA V posi-
+tions. Solver status, relaxation values, forecast error and command-computation time
+are also recorded.
+The safety measurements are sampled at the control frequency and use conﬁgured
+radii; they are not a continuous-time swept-volume proof. Control-computation times
+are wall-clock measurements, while arrival time is simulation time. Diagnostic evalua-
+tions ran concurrently, so timing results are not isolated benchmarks. The distinction
+is important when assessing whether a controller can meet a 50 ms real-time deadline.
+No new learning was performed during the reported checkpoint evaluation. The infer-
+ence runners explicitly block PPO learning and optimizer updates, and model hashes
+were veriﬁed after testing. This separates measured policy behavior from changes that
+could otherwise occur during analysis.
+14
+
+Chapter 5
+Results and Discussion
+5.1 Training progress and early stopping
+Figure 5.1 summarizes the recorded validation history. The four distant goals remain
+ﬁxed, whereas the six stage-validation goals become harder after curriculum promo-
+tion. Success on the ﬁxed distant set becomes consistent after approximately 560,000
+transitions. Both sets pass at 650,000, 660,000 and 670,000 transitions, triggering the
+conﬁgured early stop. The ﬁnal policy has 670,000 recorded transitions even though
+the requested ceiling was two million.
+Figure 5.1: Validation history for the reported eight-environment run. The dashed vertical
+line marks 507,904 transitions, the end of the earlier same-seed run. Current-stage goals
+change on curriculum promotion. The repeated end-of-training validation is counted only
+once in this plot.
+The run contains 1,639 completed training episodes: 655 goals, 917 timeouts and 67
+out-of-bounds terminations. These totals include early unsuccessful learning. In the
+ﬁnal hundred episodes, ninety succeed. After the full goal distribution is enabled,
+336 of 461 completed episodes succeed and no out-of-bounds termination is recorded.
+These observations indicate improvement during learning, but do not independently
+certify the ﬁnal deterministic policy.
+The selected checkpoint at 630,000 transitions passes the four distant goals and all
+six stage goals. The ﬁnal model also passes both sets. They diﬀer because selection
+15
+
+5. Results and Discussion
+uses a lexicographic validation score, not simply the most recent training step. Both
+are retained and evaluated to make this distinction explicit.
+5.2 Additional goal-reaching tests
+Table 5.1 and Figure 5.2 report the sixty-goal evaluation. Both checkpoints achieve
+59/60 successes, or 98.3% observed success. This is a count on the speciﬁed evaluation
+set, not an estimated universal success probability. The obstacle is distant in these
+trials, so the measurement concerns navigation without active obstacle avoidance.
+T able 5.1: Additional goal tests; twenty goals per distance group.
+Validated 630k Final 670k
+Group Success Mean error (m) Success Mean error (m)
+Near 20/20 0.0815 20/20 0.0795
+Medium 20/20 0.0812 20/20 0.0675
+Distant 19/20 0.0834 19/20 0.0851
+Figure 5.2: Observed success on the same additional goal set for the two checkpoints. No
+out-of-bounds event occurred in these tests.
+Both policies fail the same target, approximately [0. 9412, − 4. 7667, 2. 9977]T m. The
+selected checkpoint ﬁnishes 0.1097 m away and the ﬁnal checkpoint 0.1344 m away.
+Their closest distances are 0.1021 and 0.1034 m, respectively: neither enters the orig-
+inal 0.10 m acceptance radius. Their ﬁnal speeds are small, indicating a residual
+position oﬀset rather than a high-speed pass through the target. The tolerance is not
+relaxed to convert this failure into a success.
+The ﬁnal model averages 6.42 s over the sixty episodes, including the timeout, com-
+pared with 7.20 s for the selected model. This aggregate mixes short and long tasks
+16
+
+5. Results and Discussion
+and should not be interpreted as the time required for the separate ﬁve-metre scenario
+mission. It also shows that the selected and ﬁnal models are not uniformly ordered
+on every metric.
+5.3 Main scenario comparison: selected check-
+point
+Table 5.2 uses only the automatically selected 630,000-step checkpoint. All nine con-
+troller/scenario combinations reach the shared goal. The nominal PPO is identical
+between pure RL and RL+ACBF. Figure 5.3 summarizes arrival and separation, and
+Figure 5.4 shows the goal-error histories.
+T able 5.2: Main scenario results for the validated checkpoint. dmin is centre separation,
+not surface clearance. Cases 1–3 are linear, accelerating and ﬁgure-eight motion.
+Case Controller Time (s) Error (m) dmin (m) Path (m)
+1 Pure RL 13.70 0.089 2.067 7.628
+1 RL+ACBF 13.70 0.089 2.067 7.628
+1 PID+ACBF 7.60 0.086 1.828 5.087
+2 Pure RL 13.70 0.089 1.072 7.628
+2 RL+ACBF 13.80 0.088 1.211 7.386
+2 PID+ACBF 7.85 0.087 1.003 5.095
+3 Pure RL 13.70 0.089 0.464 7.628
+3 RL+ACBF 13.60 0.078 0.770 7.441
+3 PID+ACBF 7.80 0.085 0.842 5.099
+Figure 5.3: Selected-checkpoint comparison. In the right panel the dashed line is the
+0.50 m safety boundary and the dotted line is the 0.40 m collision threshold.
+17
+
+5. Results and Discussion
+Figure 5.4: Goal-error histories for the selected checkpoint. The dotted horizontal line is
+the 0.10 m position tolerance; arrival additionally requires the speed and hold-time condi-
+tions.
+5.3.1 Linear obstacle
+In case 1, pure RL and RL+ACBF have the same trajectory and arrive in 13.70 s.
+Their minimum centre distance is 2.067 m, comfortably above the buﬀer bound-
+ary. The nominal trajectory does not require alteration by the ﬁlter in this case.
+PID+ACBF reaches the goal in 7.60 s with a shorter path. Thus the ﬁlter’s pass-
+through behavior can be observed without implying an eﬃciency advantage for RL.
+Figure 5.5: Case 1 trajectories for the selected checkpoint. A spatial trajectory plot does
+not by itself establish time-aligned obstacle clearance; that is measured from the logged
+states.
+18
+
+5. Results and Discussion
+5.3.2 Accelerating obstacle
+In case 2, the obstacle accelerates across the nominal ﬂight region. Adding ACBF
+increases minimum centre separation from 1.072 to 1.211 m. Arrival changes from
+13.70 to 13.80 s, while sampled path length decreases from 7.628 to 7.386 m. A
+ﬁlter-induced change in state can aﬀect the later policy trajectory, so a larger safety
+distance does not necessarily imply a longer path. These are measured outcomes for
+this case, not a general optimality statement.
+Figure 5.6: Case 2 trajectories for the selected checkpoint. Both RL variants arrive, while
+the ﬁltered path maintains a larger sampled minimum separation.
+5.3.3 Figure-eight obstacle
+Case 3 is the clearest demonstration of the ﬁlter’s measured safety-buﬀer beneﬁt. Pure
+RL reaches the goal but attains a minimum centre distance of 0.464 m. This is below
+the 0.50 m safety boundary and above the 0.40 m geometric collision threshold. It is
+a buﬀer violation, not a recorded collision.
+RL+ACBF maintains a minimum centre distance of 0.770 m and reaches the goal
+in 13.60 s. The increase in minimum separation is approximately 0.306 m. Surface
+clearance changes from 0.064 to 0.370 m. The ﬁltered trajectory also arrives 0.10 s
+earlier than pure RL. This small time diﬀerence should not be interpreted as a reliable
+speed advantage across tasks, but it shows that preserving the observed buﬀer need
+not prevent arrival.
+PID+ACBF reaches the goal in 7.80 s and maintains 0.842 m minimum separation.
+19
+
+5. Results and Discussion
+Figure 5.7: Case 3 trajectories for the selected checkpoint. PPO+ACBF and PID+ACBF
+use the same obstacle predictor and ﬁlter but diﬀerent nominal commands.
+Figure 5.8: Time-aligned centre separation in case 3. Pure RL enters the buﬀer; the
+ﬁltered methods remain above it in these ﬂights. Distance after a method’s arrival is not
+evaluated because its episode has ended.
+20
+
+5. Results and Discussion
+It therefore remains the stronger controller on both arrival time and minimum sepa-
+ration in this particular case. More generally, its mean scenario arrival time is 7.75 s,
+compared with 13.70 s for selected PPO+ACBF. The local results do not support a
+claim that RL is superior to PID on all evaluated metrics.
+5.4 Final-checkpoint comparison
+Table 5.3 reports the ﬁnal 670,000-step checkpoint separately. It reaches the shared
+goal in every case, but its behavior diﬀers from the selected checkpoint. Pure RL takes
+17.10 s in each case and enters the ﬁgure-eight buﬀer. ACBF preserves the buﬀer and
+leads to earlier arrival in cases 2 and 3, at 12.15 and 12.70 s. The safety ﬁlter changes
+the entire subsequent closed-loop trajectory, so it can sometimes improve arrival time
+even though its objective is to stay close to the nominal command at each sample.
+T able 5.3: Separate comparison using the ﬁnal 670,000-step checkpoint. PID rows are
+repeated for consistent comparison and are not independent repeated trials.
+Case Controller Time (s) Error (m) dmin (m) Path (m)
+1 Pure RL 17.10 0.097 2.042 7.198
+1 RL+ACBF 17.10 0.097 2.042 7.198
+1 PID+ACBF 7.60 0.086 1.828 5.087
+2 Pure RL 17.10 0.097 1.040 7.198
+2 RL+ACBF 12.15 0.096 1.186 6.799
+2 PID+ACBF 7.85 0.087 1.003 5.095
+3 Pure RL 17.10 0.097 0.465 7.198
+3 RL+ACBF 12.70 0.085 0.749 6.853
+3 PID+ACBF 7.80 0.085 0.842 5.099
+The ﬁnal and selected models tie on additional goal success but diﬀer in arrival times
+and the residual error of their shared failed goal. Retaining both provides a more
+complete picture than reporting whichever checkpoint is best for each metric. The
+results in the main trajectory ﬁgures all use the selected checkpoint.
+5.5 Diagnosis of earlier near-goal failures
+An earlier run’s selected checkpoint at 340,000 transitions approached the scenario
+goal but stopped outside the tolerance. Pure RL ﬁnished approximately 0.424 m
+away after 25 s. Extending an obstacle-distant diagnostic ﬂight to 60 s left it almost
+stationary 0.407 m away. A static policy probe found a zero-command position match-
+21
+
+5. Results and Discussion
+ing that endpoint closely. This identiﬁed a learned position bias, rather than merely
+insuﬃcient episode duration.
+Translated short-distance tests provided further evidence: the same 0.2 m relative
+movement succeeded near the ﬁxed training start but failed near the distant scenario
+target. Since the observation contains absolute position, a policy can learn diﬀerent
+local responses at diﬀerent locations. The curriculum’s early concentration around
+a ﬁxed start is a plausible contributor. However, no controlled retraining ablation
+has established that removing absolute position alone would ﬁx this behavior. The
+latest model substantially reduces the problem, but the remaining distant-goal timeout
+shows that precise positioning is not perfect everywhere.
+5.6 Computational and safety limitations
+For the selected PPO+ACBF checkpoint, recorded 95th-percentile control times are
+approximately 23.4, 116.2 and 118.8 ms in cases 1–3. The intended control interval
+is 50 ms. These timing measurements were collected during concurrent diagnostic
+work, so an isolated benchmark is required before drawing a hardware-speed conclu-
+sion. Nevertheless, the current measurements do not demonstrate real-time feasibility.
+Simulation arrival times must not be presented as wall-clock execution times.
+The selected PPO+ACBF runs include one accepted inaccurate-solver step in case 2
+and three in case 3. The implementation checks ﬁnite values and numerical residuals
+before accepting commands, but also permits higher-order slack. Successful geometry
+in these ﬂights is an empirical result, not a proof that all barrier conditions hold
+exactly under every forecast error.
+A previous checkpoint exposed a more serious limitation: in a ﬁgure-eight encounter,
+obstacle prediction overestimated next-step separation, the measured distance entered
+the safety buﬀer, and the following optimization was infeasible. The current policy
+avoids that failure in the tested trajectories, but no change to the predictor or ﬁlter
+has eliminated the underlying risk. Better navigation can reduce diﬃcult encounters
+without making the safety layer universally robust.
+5.7 Threats to validity
+The results use a single training seed. The two reported checkpoints come from one
+run and must not be counted as independent learning repetitions. The additional goals
+are reused evaluation goals. The moving-obstacle cases share a start and destination,
+22
+
+5. Results and Discussion
+so three successful cases do not constitute three distinct destination-generalization
+tests. The environment uses prescribed obstacle motion and exact simulated position
+measurements, not a hardware perception stack.
+There is no ﬁxed-CBF baseline, no predictor ablation and no multiple-obstacle test.
+Therefore the study can attribute the paired diﬀerence to adding the complete IM-
+M/ACBF layer for the same PPO policy, but cannot isolate how much of that diﬀer-
+ence comes from adaptation, the predictor, or other implementation choices. Collision
+counts are geometric, sampled metrics, and zero observed collisions in a ﬁnite set is
+not a universal probability statement.
+5.8 Discussion
+The evidence supports three conclusions. First, the implemented training procedure
+produces substantially improved navigation and satisﬁes its conﬁgured stopping con-
+dition. Second, the lower layer prevents the observed ﬁgure-eight buﬀer entry while
+retaining goal arrival for the evaluated policies. Third, the classical baseline remains
+faster and more direct. Together these results demonstrate a working hierarchical
+comparison with useful diagnostics, while deﬁning clear boundaries on what can be
+claimed.
+The most productive next step is broader validation rather than automatically increas-
+ing the training budget to its original ceiling. Independent seeds, varied start positions,
+new goal sets, prediction-error tests and isolated timing measurements would address
+the most consequential remaining uncertainties.
+23
+
+Chapter 6
+Conclusions and Future Work
+6.1 Conclusions
+This project implemented a hierarchical UA V navigation controller that combines
+PPO reference commands, IMM obstacle prediction and an adaptive barrier-based
+safety ﬁlter. The implementation was evaluated against pure PPO and a classical PID-
+based controller using the same simulated plant and arrival conditions. Conﬁguration
+snapshots, checkpoint hashes and per-step logs were used to make the comparisons
+traceable.
+The latest run stopped at 670,000 transitions after repeatedly passing its ﬁxed valida-
+tion criteria. The selected checkpoint at 630,000 transitions and the ﬁnal checkpoint
+each reached 59 of 60 additional goals. One distant target retained a small steady
+position error beyond the 0.10 m radius. Thus the conﬁgured validation objective was
+achieved, but arbitrary-goal reliability was not established.
+All three controllers reached the common destination in the linear, accelerating and
+ﬁgure-eight obstacle scenarios. For the selected checkpoint, the ﬁgure-eight pure-
+RL path entered the safety buﬀer with a minimum centre separation of 0.464 m.
+PPO+ACBF maintained 0.770 m and reached the goal in 13.60 s. This is a concrete
+observed beneﬁt of the complete ﬁltering layer. It is not a claim that a physical
+collision was prevented, because the unﬁltered trajectory did not cross the conﬁgured
+collision threshold.
+The PID-based baseline remained more eﬃcient, reaching the scenario goal in approx-
+imately 7.6–7.85 s. The contribution is therefore a successful implementation, com-
+parison and diagnosis of a hierarchical learning-and-ﬁltering approach, rather than
+demonstrated superiority over classical control. Earlier failures and current timing
+limitations show why numerical prediction-based safety must be assessed beyond a
+favorable trajectory plot.
+24
+
+6. Conclusions and Future Work
+6.2 Future work
+Navigation generalization. Repeat training with independent seeds and evaluate
+on new goals and starting states. Maintain close-to-goal tasks at varied locations
+after curriculum promotion to test and reduce location-dependent position bias. Use
+separate model-selection and ﬁnal-evaluation sets.
+Prediction robustness and feasibility. Introduce controlled sensor noise, obsta-
+cle acceleration changes and model mismatch. Evaluate margins that account for
+prediction uncertainty. Develop and test a feasible backup control strategy, since
+terminating an evaluation on solver failure is not an emergency behavior for a real
+drone.
+Component ablations. Compare adaptive and ﬁxed barrier coeﬃcients, single-
+model and IMM predictions, and alternative nominal controllers under the same con-
+ditions. This would distinguish the contribution of individual components from the
+eﬀect of the complete hierarchy.
+Computational validation. Measure timing in isolated runs and proﬁle the re-
+peated simulator forecasts and optimization. Demonstrate deadline compliance before
+considering hardware deployment. Hardware-in-the-loop and physical tests should fol-
+low only after the simulation assumptions and recovery behavior are made explicit.
+Broader scenarios. Extend the setting to multiple obstacles, varying goal loca-
+tions and disturbances. Report both mission completion and safety events, retaining
+failures rather than relaxing criteria after observing results. These steps would turn
+the current successful demonstrations into stronger evidence of repeatable navigation
+performance.
+25
+
+References
+Ames, A. D., X. Xu, J. W. Grizzle, and P. Tabuada (2017). “Control Barrier Function
+Based Quadratic Programs for Safety Critical Systems”. In: IEEE Transactions on
+Automatic Control 62.8, pp. 3861–3876. doi: 10.1109/TAC.2016.2638961.
+Gao, J. and J. Sun (2026). “Hierarchical Safe Reinforcement Learning Control for
+UA Vs via Adaptive Control Barrier Function and Interacting Multiple Model”. In:
+Advanced Mechatronics 1.1, 3. doi: 10 . 53941 / am . 2026 . 100003. url: https :
+//www.sciltp.com/journals/am/articles/2607004775.
+Panerati, J., H. Zheng, S. Zhou, J. Xu, A. Prorok, and A. P. Schoellig (2021). Learning
+to Fly—a Gym Environment with PyBullet Physics for Reinforcement Learning of
+Multi-agent Quadcopter Control . arXiv: 2103.02142 . url: https://arxiv.org/
+abs/2103.02142.
+Raﬃn, A., A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and N. Dormann (2021).
+“Stable-Baselines3: Reliable Reinforcement Learning Implementations”. In: Journal
+of Machine Learning Research 22.268, pp. 1–8. url: https://jmlr.org/papers/
+v22/20-1364.html.
+Sarkar, T. (2026). BTP UA V Navigation: Local Implementation and Experiment Ar-
+tifacts. Local project archive. Training and evaluation run identiﬁers, checkpoint
+identities and reproduction details are listed in Appendix A.
+Schulman, J., F. Wolski, P. Dhariwal, A. Radford, and O. Klimov (2017). Proximal
+Policy Optimization Algorithms . arXiv: 1707.06347 . url: https://arxiv.org/
+abs/1707.06347.
+Stable-Baselines3 Contributors (n.d.). PPO Documentation . url: https://stable-
+baselines3 . readthedocs . io / en / master / modules / ppo . html (visited on
+11/05/2026).
+26
+
+Chapter A
+Reproducibility and Artifact Inven-
+tory
+A.1 Experiment identity
+The main results come from local project artifacts (Sarkar 2026). Training run:
+20261105T022305_489044Z. Evaluation root: 20261105T081629_168420Z. The ex-
+periment source ﬁngerprint, using ordered relative Python paths and LF-normalized
+ﬁle bytes, is
+e27217395c51bdde1b11697346c61b5e5ea5a16e159b46739ebe0317d3d758f1.
+The selected best_candidate.zip and validated_model.zip are identical. Their
+SHA-256 is
+0b58672c4e2d794b19e04e02ef9c4c56ab091c087481f23aa9d7b45f1d23bd1a.
+The ﬁnal model SHA-256 is
+ae7a2a0049fb52dbafc69a7d9918496442694bd0fd4d1cce843fd426c12a590c.
+Hashes were veriﬁed unchanged after inference. The selected model has 630,000
+recorded transitions and the ﬁnal model 670,000. Both are in the full-distribution
+curriculum stage.
+A.2 Recorded dependencies
+These are recorded environment versions, not a claim that every later library version
+reproduces identical trajectories. The report does not infer hardware speed from these
+package versions.
+27
+
+A. Reproducibility and Artifact Inventory
+T able A.1: Versions recorded in the training manifest.
+Component Version
+Python 3.14.3
+NumPy / SciPy 2.5.3 / 1.18.0
+PyTorch 2.14.1+cu126
+Gymnasium 1.3.0
+Stable-Baselines3 2.9.0
+PyBullet 3.2.7
+gym-pybullet-drones 2.2.0
+CVXPY 1.9.3
+CLARABEL / SCS 0.11.1 / 3.3.1
+Matplotlib 3.11.2
+A.3 Evaluation commands
+The following command evaluates the selected checkpoint and creates a new dated
+output directory. It does not train a policy.
+1 python evaluate.py --model results/training/20261105T022305_489044Z/
+validated_model.zip --case all
+Listing A.1: Evaluate the selected policy on all three scenarios.
+For the ﬁnal-policy comparison, replace the ﬁlename by ppo_final.zip. The saved
+evaluation runner in the review directory performs the sixty-goal tests and blocks
+learning calls. It uses the stored coordinates and seeds to keep the checkpoint com-
+parison paired. A rerun should use a new output directory rather than overwrite prior
+evidence.
+A.4 Figure inventory
+The main external ﬁgure ﬁles are listed below. Every trajectory and separation ﬁgure
+uses the selected 630,000-step checkpoint. The training ﬁgure covers the whole run;
+the additional-goal ﬁgure explicitly compares both checkpoints. A machine-readable
+figure_sources.json is included in the Overleaf package.
+28
+
+A. Reproducibility and Artifact Inventory
+T able A.2: Figure ﬁles and their role.
+File in figures/ Purpose
+learning_progress.png Fixed and stage validation history
+goal_generalization.png Additional goal success for 630k and 670k
+selected_comparison.png Main arrival and separation comparison
+selected_goal_errors.png Goal-error curves for the selected policy
+case1_trajectory.png Linear-obstacle 3D trajectories
+case2_trajectory.png Accelerating-obstacle 3D trajectories
+case3_trajectory.png Figure-eight 3D trajectories
+case3_separation.png Figure-eight time-aligned safety evidence
+case1_separation.png Supplementary linear-case distance his-
+tory
+case2_separation.png Supplementary accelerating-case distance
+history
+Figure A.1: Supplementary case 1 separation history for the selected checkpoint.
+A.5 Interpretation checklist
+An arrival claim must use both position and speed/hold conditions. A safety claim
+must distinguish the 0.50 m buﬀer from the 0.40 m collision threshold. A checkpoint
+comparison must identify the actual weights used. A generalization claim must iden-
+tify which goals and training seeds were tested. A real-time claim requires wall-clock
+29
+
+A. Reproducibility and Artifact Inventory
+Figure A.2: Supplementary case 2 separation history for the selected checkpoint.
+deadline measurements. These distinctions are necessary to reproduce the conclusions
+of this report without overstating the evidence.
+30

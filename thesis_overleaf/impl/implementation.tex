@@ -1,0 +1,77 @@
+\chapter{Implementation and Experimental Method}\label{ch:implementation}
+\section{Software organization}
+The project uses Python, PyBullet, \texttt{gym-pybullet-drones}, Gymnasium, Stable-Baselines3, PyTorch and CVXPY. Table~\ref{tab:modules} identifies the principal components. Experiment manifests record package versions, configuration snapshots, source fingerprints and model hashes. This prevents plots from being silently associated with a different checkpoint.
+
+\begin{table}[htbp]\centering\small
+\caption{Principal implementation modules.}\label{tab:modules}
+\begin{tabularx}{\textwidth}{lY}\toprule Module & Responsibility\\\midrule
+\texttt{UAVNavEnv.py} & Reset, observation, reward, dynamics and episode outcomes\\
+\texttt{acceleration\_ctrl.py} & Net acceleration to attitude and rotor commands\\
+\texttt{imm\_predictor.py} & Model mixing, estimation and obstacle forecasts\\
+\texttt{acbf\_filter.py} & Adaptive constraints, optimization and verification\\
+\texttt{hierarchical\_ctrl.py} & Integration of PPO or PID with IMM and ACBF\\
+\texttt{train\_ppo.py} & Learning, curriculum, validation and checkpoint selection\\
+\texttt{evaluate.py} & Fixed-scenario comparisons and outcome logging\\
+\texttt{utils/logger.py} & Trajectories, distances, solver data and figures\\\bottomrule
+\end{tabularx}\end{table}
+
+The physics and attitude loop run at 240~Hz. PPO and the safety filter issue commands at 20~Hz, so each command spans twelve physics steps. Episode resets clear the attitude-controller history. A shadow simulator copies the drone state and controller memory for forecasts without advancing the live world. The policy interface is checked before evaluation, including action semantics, scales and control frequencies.
+
+\section{Training configuration}
+The run analysed in this report began from scratch with seed 42, eight environments and a requested budget of two million aggregate transitions. It did not resume the previous checkpoint. Its early history matches the earlier run with the same seed and settings; it is therefore not an independent-seed replication.
+
+\begin{table}[htbp]\centering
+\caption{PPO and environment settings used in the reported run.}\label{tab:hyperparameters}
+\begin{tabular}{ll}\toprule Parameter & Value\\\midrule
+Actor and critic hidden layers & $[64,64]$, Tanh activation\\
+Learning rate & $10^{-4}$\\
+Steps per environment per rollout & 1,024\\
+Environments & 8\\
+Aggregate transitions per full rollout & 8,192\\
+Minibatch size / epochs & 128 / 5\\
+Reward discount $\beta$ & 0.99\\
+PPO clipping / target KL & 0.2 / 0.015\\
+Entropy coefficient / initial log standard deviation & 0 / $-1.5$\\
+Control / physics frequency & 20 / 240~Hz\\
+Maximum episode length & 500 control samples (25~s)\\
+Validation interval & 10,000 aggregate transitions\\\bottomrule
+\end{tabular}\end{table}
+
+The implementation uses \texttt{DummyVecEnv}. Multiple environments supply separate trajectories, but their simulation steps are executed sequentially; this is not eight-way process parallelism. In PPO, rollout size is the product of steps per environment and environment count \parencite{sb3ppo}. A rollout/training cycle contains many minibatch optimizer steps, so cycle count must not be confused with gradient-update count.
+
+\section{Curriculum and validation}
+Goals are initially sampled close to the fixed start $[0,0,1]^\mathsf{T}$~m. The curriculum radii are 0.4, 1.0 and 2.5~m, followed by the full goal distribution. At a finite radius $r$, the sampled distance is between $r/2$ and $r$, subject to feasible altitude and flight bounds. Promotion requires at least 80\% success over a twenty-episode window for the active stage. The full distribution samples horizontal coordinates within approximately $[-5,5]$~m and altitude within $[0.5,3]$~m, with initial goal distance greater than 2~m.
+
+Four fixed distant validation goals are
+\begin{equation}
+\{[-3,2,1.8],\ [1,-4,1.2],\ [2,2,2.5],\ [-2,-2,0.7]\}\ \mathrm{m}.
+\end{equation}
+Six additional stage-dependent goals are placed along coordinate directions, with a lower-altitude adjustment where needed. These stage goals change when the curriculum advances. Their success curve therefore does not represent an unchanged test set throughout training.
+
+Checkpoint selection ranks the number of successes on the four fixed goals, then their mean final error and mean elapsed time. A separate validated checkpoint is saved when both validation sets pass. Training stops after three successful validations associated with distinct policy updates. The analysed run met this condition at 650,000, 660,000 and 670,000 transitions. A duplicate end-of-training record at 670,000 does not represent an extra independent trial.
+
+\section{Checkpoint identity and reporting policy}
+The selected checkpoint at \selectedsteps{} transitions is byte-identical to the saved validated model. It is the main model used for scenario figures and tables in this report. The final checkpoint at \finalsteps{} transitions is evaluated separately. Keeping both avoids mixing the most favorable result from one checkpoint with another checkpoint's safety metrics.
+
+The term ``validated'' refers to the configured finite goal sets, not a certification. All checkpoint identifiers and figure sources are retained in the accompanying artifact manifest. Historical results are used only where they diagnose a failure or illustrate a change, and are labelled as historical.
+
+\section{Additional goal evaluation}
+Each checkpoint is evaluated on sixty stored goals: twenty nearby goals at distances 0.2--0.4~m, twenty medium goals at 0.5--1.0~m, and twenty distant goals whose sampled distances range from 2.07 to 6.26~m. The obstacle is placed at $[12,12,12]^\mathsf{T}$~m to isolate goal navigation. Actions are deterministic, and the original arrival conditions and 25~s limit are retained.
+
+The goals are the same additional evaluation set used in earlier project reviews. They are separate from the callback's ten validation goals but have been reused for model analysis. Accordingly, they are described as an additional paired evaluation set, not as a newly untouched test set. Each checkpoint receives the exact same goal coordinates and seeds.
+
+\section{Moving-obstacle scenarios}
+All scenarios use start $[0,0,1]^\mathsf{T}$~m and goal $[5,0,2]^\mathsf{T}$~m. The three obstacle laws are
+\begin{align}
+p_o^{(1)}(t)&=[2.5,\ 0.8t,\ 1.5]^\mathsf{T},\\
+p_o^{(2)}(t)&=[2.5,\ -1.5+0.5t+0.2t^2,\ 1.5]^\mathsf{T},\\
+p_o^{(3)}(t)&=[2.5+1.5\sin(0.6t),\ 1.5\sin(0.6t)\cos(0.6t),\ 1.5]^\mathsf{T}.
+\end{align}
+The first is linear motion, the second constant acceleration, and the third figure-eight motion. Pure RL and RL+ACBF use the same PPO weights. PID+ACBF uses position gains $K_p=I$, $K_d=2I$ and $K_i=0$, with the same prediction and filtering layer. The comparison therefore changes the nominal controller or the presence of the filter, while retaining the plant and measurement protocol.
+
+\section{Metrics and interpretation}
+The evaluator records goal success, stop reason, arrival time, terminal position error, terminal speed, sampled minimum centre separation and path length. Path length is the sum of Euclidean distances between consecutive sampled UAV positions. Solver status, relaxation values, forecast error and command-computation time are also recorded.
+
+The safety measurements are sampled at the control frequency and use configured radii; they are not a continuous-time swept-volume proof. Control-computation times are wall-clock measurements, while arrival time is simulation time. Diagnostic evaluations ran concurrently, so timing results are not isolated benchmarks. The distinction is important when assessing whether a controller can meet a 50~ms real-time deadline.
+
+No new learning was performed during the reported checkpoint evaluation. The inference runners explicitly block PPO learning and optimizer updates, and model hashes were verified after testing. This separates measured policy behavior from changes that could otherwise occur during analysis.
